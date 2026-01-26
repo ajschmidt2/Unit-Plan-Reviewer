@@ -76,6 +76,10 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
             page_label = page.get("page_label")
         sheet_number = page.get("sheet_number", "")
         sheet_title = page.get("sheet_title", "")
+        if not sheet_number and idx < len(page_payloads):
+            sheet_number = page_payloads[idx].get("sheet_number_hint", "")
+        if not sheet_title and idx < len(page_payloads):
+            sheet_title = page_payloads[idx].get("sheet_title_hint", "")
         summary = page.get("summary", "")
         issues = page.get("issues", [])
         if not isinstance(issues, list):

@@ -1,7 +1,12 @@
 import subprocess
 import streamlit as st
 from src.auth import require_login
-from src.pdf_utils import pdf_to_page_images, extract_page_texts, extract_title_block_texts
+from src.pdf_utils import (
+    pdf_to_page_images,
+    extract_page_texts,
+    extract_sheet_metadata,
+    extract_title_block_texts,
+)
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
 from src.storage import init_db, save_review
@@ -48,10 +53,15 @@ def main():
             )
             if include_all or include_page:
                 title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
+                sheet_number, sheet_title = extract_sheet_metadata(
+                    title_block or page_texts.get(p.page_index, "")
+                )
                 selected.append({
                     "page_index": p.page_index,
                     "page_label": "Floor Plan",
                     "png_bytes": p.png_bytes,
+                    "sheet_number_hint": sheet_number,
+                    "sheet_title_hint": sheet_title,
                     "extra_text": (
                         f"Page text:\n{page_texts.get(p.page_index, '')}\n\n"
                         f"Title block text (right side):\n{title_block}"
