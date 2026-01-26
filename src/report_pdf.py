@@ -79,13 +79,17 @@ def _severity_color(severity: str) -> tuple:
     return colors.get(severity, (0, 0, 0))
 
 
-def build_pdf_report(result, issue_notes=None, severity_overrides=None, dismissed_issues=None):
+def build_pdf_report(result, annotations=None):
     buf = BytesIO()
     c = FooterCanvas(buf, pagesize=letter)
     w, h = letter
-    issue_notes = issue_notes or {}
-    severity_overrides = severity_overrides or {}
-    dismissed_issues = dismissed_issues or set()
+    annotations = annotations or {}
+    dismissed = set(annotations.get("dismissed_issues", []))
+    notes = annotations.get("notes", {}) or {}
+    severity_overrides = annotations.get("severity_overrides", {}) or {}
+
+    def issue_id(page_index: int, issue_index: int) -> str:
+        return f"p{page_index}_i{issue_index}"
     
     # Define margins
     left_margin = inch
@@ -116,7 +120,11 @@ def build_pdf_report(result, issue_notes=None, severity_overrides=None, dismisse
     c.drawString(left_margin + 0.5*inch, y, f"Pages Reviewed: {len(result.pages)}")
     y -= 0.3 * inch
     
-    total_issues = sum(len(p.issues) for p in result.pages)
+    total_issues = 0
+    for p in result.pages:
+        for idx, _ in enumerate(p.issues):
+            if issue_id(p.page_index, idx) not in dismissed:
+                total_issues += 1
     c.drawString(left_margin + 0.5*inch, y, f"Total Issues Found: {total_issues}")
     y -= 1 * inch
     
@@ -162,8 +170,9 @@ def build_pdf_report(result, issue_notes=None, severity_overrides=None, dismisse
         
         # Sheet info
         c.setFont("Helvetica", 9)
-        sheet_id = getattr(page, "sheet_id", None) or getattr(page, "sheet_number", None)
-        sheet_text = f"Sheet: {sheet_id or 'N/A'} — {page.sheet_title or 'N/A'}"
+        sheet_no = getattr(page, "sheet_number", None) or getattr(page, "sheet_id", None) or "N/A"
+        sheet_title = getattr(page, "sheet_title", None) or "N/A"
+        sheet_text = f"Sheet: {sheet_no} — {sheet_title}"
         c.drawString(left_margin, y, sheet_text)
         y -= 0.25 * inch
         
@@ -183,23 +192,24 @@ def build_pdf_report(result, issue_notes=None, severity_overrides=None, dismisse
             c.drawString(left_margin, y, "✓ No issues reported for this page.")
             y -= 0.4 * inch
         else:
-            for issue_idx, issue in enumerate(page.issues, 1):
+            for idx, issue in enumerate(page.issues):
                 # Check if we need a new page before each issue
                 if y < 2.5 * inch:
                     c.showPage()
                     y = h - inch
                 
                 # Issue number and severity badge
-                issue_id = f"p{page.page_index}_i{issue_idx}"
-                if issue_id in dismissed_issues:
+                iid = issue_id(page.page_index, idx)
+                if iid in dismissed:
                     continue
-                resolved_severity = severity_overrides.get(issue_id, issue.severity)
+                effective_severity = severity_overrides.get(iid, issue.severity)
+                issue_note = notes.get(iid, "").strip()
                 c.setFont("Helvetica-Bold", 10)
-                c.setFillColorRGB(*_severity_color(resolved_severity))
+                c.setFillColorRGB(*_severity_color(effective_severity))
                 severity_symbol = {"High": "●", "Medium": "◐", "Low": "○"}
                 header = (
-                    f"{issue_num}. {severity_symbol.get(resolved_severity, '○')} "
-                    f"[{resolved_severity}] {issue.location_hint}"
+                    f"{issue_num}. {severity_symbol.get(effective_severity, '○')} "
+                    f"[{effective_severity}] {issue.location_hint}"
                 )
                 c.drawString(left_margin, y, header)
                 c.setFillColorRGB(0, 0, 0)
@@ -235,11 +245,18 @@ def build_pdf_report(result, issue_notes=None, severity_overrides=None, dismisse
                     y = wrap_text(c, ref_text, left_margin + 0.2*inch, y, max_text_width - 0.2*inch, "Helvetica-Oblique", 8)
                     y -= 0.15 * inch
 
-                note_text = issue_notes.get(issue_id, "")
-                if note_text:
+                if issue_note:
                     c.setFont("Helvetica", 9)
-                    note_para = f"<b>Notes:</b> {note_text}"
-                    y = wrap_text(c, note_para, left_margin + 0.2*inch, y, max_text_width - 0.2*inch, "Helvetica", 9)
+                    note_text = f"<b>Reviewer Note:</b> {issue_note}"
+                    y = wrap_text(
+                        c,
+                        note_text,
+                        left_margin + 0.2 * inch,
+                        y,
+                        max_text_width - 0.2 * inch,
+                        "Helvetica",
+                        9,
+                    )
                     y -= 0.15 * inch
                 
                 y -= 0.3 * inch

@@ -555,11 +555,14 @@ def main():
         # Generate and offer PDF download
         if st.session_state.report_pdf is None:
             with st.spinner("Generating PDF report..."):
+                annotations = {
+                    "dismissed_issues": list(st.session_state.get("dismissed_issues", set())),
+                    "notes": st.session_state.get("issue_notes", {}),
+                    "severity_overrides": st.session_state.get("issue_severity_overrides", {}),
+                }
                 st.session_state.report_pdf = build_pdf_report(
                     review_result,
-                    issue_notes=st.session_state.issue_notes,
-                    severity_overrides=st.session_state.issue_severity_overrides,
-                    dismissed_issues=st.session_state.dismissed_issues,
+                    annotations=annotations,
                 )
 
         st.download_button(
