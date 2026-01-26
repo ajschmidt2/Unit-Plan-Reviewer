@@ -568,6 +568,40 @@ def main():
             mime="application/pdf"
         )
 
+    def render_review_output(review_result):
+        # Display results on screen
+        display_results(review_result)
+
+        # Check for previous reviews
+        history = get_project_review_history(project_name.strip(), limit=2)
+        if len(history) >= 2:
+            st.info("📂 Previous review found for this project")
+
+            if st.checkbox("Compare with previous review"):
+                old_review = history[1]["result"]
+                new_review = review_result.model_dump()
+
+                comparison = compare_reviews(old_review, new_review)
+                display_comparison(comparison)
+
+        # Save to database once per run
+        if not st.session_state.review_saved:
+            save_review(project_name.strip(), ruleset, scale_note, review_result.model_dump_json())
+            st.session_state.review_saved = True
+            st.success("💾 Review saved to database")
+
+        # Generate and offer PDF download
+        if st.session_state.report_pdf is None:
+            with st.spinner("Generating PDF report..."):
+                st.session_state.report_pdf = build_pdf_report(review_result)
+
+        st.download_button(
+            "📥 Download PDF Report",
+            st.session_state.report_pdf,
+            file_name=f"{project_name.replace(' ', '_')}_review.pdf",
+            mime="application/pdf"
+        )
+
     if st.button("Run Review", type="primary"):
         if not project_name.strip():
             st.error("Enter a Project Name first.")
