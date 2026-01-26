@@ -5,16 +5,63 @@ from openai import OpenAI
 from .schemas import ReviewResult
 
 SYSTEM_INSTRUCTIONS = """
-You are an accessibility plan reviewer for UNIT plans.
-Flag likely issues when uncertain and assign confidence levels.
-Do not invent measurements.
-Extract sheet number and sheet title from the drawing title block (usually right side).
-If possible, infer sheet number and sheet title from the page title block text and include it in location_hint,
-e.g., "A2.1 - Unit Plan / Bath 1".
-If a field is unknown, use an empty string (never omit required fields).
-Provide at least 3 issues per page; if few are visible, include low-confidence potential risks.
-Use clear, actionable findings and recommendations tied to FHA/ANSI rules.
-Return STRICT JSON matching the schema.
+You are an expert accessibility plan reviewer for residential unit plans, specializing in FHA and ANSI A117.1 compliance.
+
+Your task is to carefully review architectural floor plans, elevations, and schedules for accessibility compliance issues.
+
+CRITICAL REQUIREMENTS:
+1. You MUST provide at least 3 issues per page - if major issues aren't visible, flag potential risks or items that need verification
+2. You MUST extract the sheet number and sheet title from the title block (usually on the right side of the drawing)
+3. Every issue MUST include: severity, location_hint, finding, recommendation, confidence
+4. Be specific about locations (e.g., "Master Bathroom entrance", "Kitchen approach", "Hallway near bedroom 2")
+5. Reference specific FHA or ANSI requirements when applicable
+
+COMMON ACCESSIBILITY ISSUES TO CHECK:
+- Door clear opening widths (32" min for FHA, 32" for Type A, varies for Type B)
+- Maneuvering clearances at doors (approach side, strike side)
+- Accessible routes (36" min width continuous)
+- Bathroom clearances (60" turning circle or T-turn)
+- Kitchen work aisle widths (40" min)
+- Toilet clearances
+- Grab bar backing locations
+- Counter heights and knee clearances
+- Threshold heights
+- Hardware types and mounting heights
+
+CONFIDENCE LEVELS:
+- High: Clearly visible measurement or condition that violates code
+- Medium: Likely issue based on typical drawing conventions but needs field verification
+- Low: Potential concern or item that should be verified but not clearly shown
+
+OUTPUT FORMAT:
+Return STRICT JSON matching this schema:
+{
+  "project_name": "string",
+  "ruleset": "FHA" | "ANSI_A1171_TYPE_A" | "ANSI_A1171_TYPE_B",
+  "scale_note": "string",
+  "overall_summary": "Brief overall assessment",
+  "pages": [
+    {
+      "page_index": 0,
+      "page_label": "Floor Plan",
+      "sheet_number": "A2.1",
+      "sheet_title": "Unit Plan",
+      "summary": "Brief page summary",
+      "issues": [
+        {
+          "severity": "High" | "Medium" | "Low",
+          "location_hint": "Specific location on drawing",
+          "finding": "What the issue is",
+          "recommendation": "How to fix it",
+          "reference": "FHA section or ANSI reference (optional)",
+          "confidence": "High" | "Medium" | "Low"
+        }
+      ]
+    }
+  ]
+}
+
+IMPORTANT: Even if a plan looks mostly compliant, identify at least 3 items per page that need verification or potential concerns.
 """
 
 def _png_to_data_url(png_bytes: bytes) -> str:
@@ -36,14 +83,33 @@ def _extract_output_text(response) -> str | None:
 def _coerce_json(text: str) -> dict:
     if not text or not isinstance(text, str):
         raise ValueError("LLM response was empty.")
+    
+    # Try direct parsing first
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
+        pass
+    
+    # Try extracting JSON from markdown code blocks
+    if "```json" in text:
+        start = text.find("```json") + 7
+        end = text.find("```", start)
+        if end > start:
+            try:
+                return json.loads(text[start:end].strip())
+            except json.JSONDecodeError:
+                pass
+    
+    # Try finding JSON object boundaries
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
             return json.loads(text[start:end + 1])
-        raise ValueError(f"LLM response was not valid JSON: {text[:2000]}")
+        except json.JSONDecodeError:
+            pass
+    
+    raise ValueError(f"LLM response was not valid JSON. First 500 chars: {text[:500]}")
 
 def _coerce_choice(value: str | None, allowed: set[str], fallback: str) -> str:
     if value in allowed:
@@ -118,35 +184,36 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_
     client = OpenAI(api_key=api_key)
 
     content = [
-        {"type": "text", "text": f"Project: {project_name}\nRuleset: {ruleset}\nScale: {scale_note}"}
+        {"type": "text", "text": f"Project: {project_name}\nRuleset: {ruleset}\nScale: {scale_note}\n\nPlease review the following architectural plans for accessibility compliance. Provide at least 3 issues per page."}
     ]
 
     for p in page_payloads:
-        content.append({"type": "text", "text": f"PAGE {p['page_index']} — {p['page_label']}"})
+        content.append({"type": "text", "text": f"\n\n=== PAGE {p['page_index']} — {p['page_label']} ==="})
         if p.get("extra_text"):
-            content.append({"type": "text", "text": p["extra_text"][:4000]})
+            content.append({"type": "text", "text": f"Extracted text from this page:\n{p['extra_text'][:4000]}"})
         content.append({
             "type": "image_url",
             "image_url": {"url": _png_to_data_url(p["png_bytes"])}
         })
 
-    if hasattr(client, "responses"):
-        resp = client.responses.create(
-            model=model_name,
-            instructions=SYSTEM_INSTRUCTIONS,
-            input=[{"role": "user", "content": content}],
-            response_format={"type": "json_object"}
-        )
-    else:
-        resp = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": SYSTEM_INSTRUCTIONS},
-                {"role": "user", "content": content}
-            ],
-            response_format={"type": "json_object"}
-        )
+    # Use chat completions (standard approach for gpt-4o-mini)
+    resp = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+            {"role": "user", "content": content}
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.3,  # Lower temperature for more consistent analysis
+    )
+    
     output_text = _extract_output_text(resp)
+    
+    if not output_text:
+        raise ValueError("No response from OpenAI API")
+    
+    print(f"LLM Response (first 1000 chars): {output_text[:1000]}")  # Debug logging
+    
     payload = _coerce_json(output_text)
     payload = _normalize_payload(payload, project_name, ruleset, scale_note, page_payloads)
 
