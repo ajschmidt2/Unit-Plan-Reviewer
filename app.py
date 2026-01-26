@@ -1,5 +1,6 @@
 import subprocess
 import streamlit as st
+import json
 from src.auth import require_login
 from src.pdf_utils import (
     pdf_to_page_images,
@@ -9,7 +10,315 @@ from src.pdf_utils import (
 )
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
-from src.storage import init_db, save_review
+from src.storage import init_db, save_review, get_project_review_history, compare_reviews
+from src.quality_analysis import ReviewQualityAnalyzer
+
+def _get_app_version() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            text=True
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return "unknown"
+
+class IssueManager:
+    """Manage user interactions with review issues"""
+    
+    @staticmethod
+    def initialize_session_state():
+        """Initialize session state for issue tracking"""
+        if 'dismissed_issues' not in st.session_state:
+            st.session_state.dismissed_issues = set()
+        if 'issue_notes' not in st.session_state:
+            st.session_state.issue_notes = {}
+        if 'issue_severity_overrides' not in st.session_state:
+            st.session_state.issue_severity_overrides = {}
+    
+    @staticmethod
+    def create_issue_id(page_index: int, issue_index: int) -> str:
+        """Create unique ID for an issue"""
+        return f"p{page_index}_i{issue_index}"
+    
+    @staticmethod
+    def display_interactive_issue(page_index: int, issue_index: int, issue: dict):
+        """Display an issue with interactive controls"""
+        IssueManager.initialize_session_state()
+        
+        issue_id = IssueManager.create_issue_id(page_index, issue_index)
+        
+        # Check if dismissed
+        if issue_id in st.session_state.dismissed_issues:
+            with st.expander(f"~~{issue_index}. [Dismissed] {issue['location_hint']}~~"):
+                st.caption("This issue has been dismissed")
+                if st.button("Restore", key=f"restore_{issue_id}"):
+                    st.session_state.dismissed_issues.remove(issue_id)
+                    st.rerun()
+            return
+        
+        # Display issue with controls
+        col1, col2 = st.columns([5, 1])
+        
+        with col1:
+            severity_color = {
+                "High": "🔴",
+                "Medium": "🟡",
+                "Low": "🟢"
+            }
+            
+            # Allow severity override
+            current_severity = st.session_state.issue_severity_overrides.get(
+                issue_id, issue['severity']
+            )
+            
+            st.markdown(
+                f"**{issue_index}. {severity_color.get(current_severity, '⚪')} "
+                f"[{current_severity}] {issue['location_hint']}**"
+            )
+        
+        with col2:
+            # Dismiss button
+            if st.button("Dismiss", key=f"dismiss_{issue_id}"):
+                st.session_state.dismissed_issues.add(issue_id)
+                st.rerun()
+        
+        st.markdown(f"**Finding:** {issue['finding']}")
+        st.markdown(f"**Recommendation:** {issue['recommendation']}")
+        
+        if issue.get('reference'):
+            st.markdown(f"**Reference:** {issue['reference']}")
+        
+        if issue.get('measurement'):
+            st.markdown(f"**Measured:** {issue['measurement']}")
+        
+        st.caption(f"*Confidence: {issue['confidence']}*")
+        
+        # Add notes section
+        with st.expander("📝 Add Notes / Override Severity"):
+            # Severity override
+            new_severity = st.selectbox(
+                "Override Severity",
+                ["Keep Original", "High", "Medium", "Low"],
+                key=f"severity_{issue_id}"
+            )
+            
+            if new_severity != "Keep Original" and new_severity != issue['severity']:
+                if st.button("Apply Severity Change", key=f"apply_sev_{issue_id}"):
+                    st.session_state.issue_severity_overrides[issue_id] = new_severity
+                    st.rerun()
+            
+            # Notes
+            existing_note = st.session_state.issue_notes.get(issue_id, "")
+            note = st.text_area(
+                "Notes",
+                value=existing_note,
+                key=f"note_{issue_id}",
+                placeholder="Add notes about this issue, field verification results, etc."
+            )
+            
+            if note != existing_note:
+                if st.button("Save Note", key=f"save_note_{issue_id}"):
+                    st.session_state.issue_notes[issue_id] = note
+                    st.success("Note saved!")
+        
+        st.divider()
+    
+    @staticmethod
+    def export_with_annotations(result, filename: str = "annotated_review.json"):
+        """Export review with user annotations"""
+        IssueManager.initialize_session_state()
+        
+        annotated = {
+            "review": result.model_dump(),
+            "annotations": {
+                "dismissed_issues": list(st.session_state.dismissed_issues),
+                "notes": st.session_state.issue_notes,
+                "severity_overrides": st.session_state.issue_severity_overrides,
+            }
+        }
+        
+        return json.dumps(annotated, indent=2)
+    
+    @staticmethod
+    def display_summary_stats():
+        """Display summary of user actions"""
+        IssueManager.initialize_session_state()
+        
+        dismissed_count = len(st.session_state.dismissed_issues)
+        notes_count = len([n for n in st.session_state.issue_notes.values() if n.strip()])
+        overrides_count = len(st.session_state.issue_severity_overrides)
+        
+        if dismissed_count > 0 or notes_count > 0 or overrides_count > 0:
+            st.info(
+                f"📊 You have: {dismissed_count} dismissed issues, "
+                f"{notes_count} notes, {overrides_count} severity overrides"
+            )
+
+def display_quality_metrics(result):
+    """Display quality metrics in Streamlit"""
+    analyzer = ReviewQualityAnalyzer()
+    metrics = analyzer.calculate_metrics(result)
+    warnings = analyzer.get_quality_warnings(metrics)
+    suggestions = analyzer.suggest_improvements(metrics)
+    
+    with st.expander("📊 Review Quality Metrics", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total Issues", metrics.total_issues)
+            st.metric("Avg Issues/Page", f"{metrics.avg_issues_per_page:.1f}")
+        
+        with col2:
+            st.metric("Confidence Score", f"{metrics.confidence_score:.0f}%")
+            st.metric("High Confidence", metrics.high_confidence_issues)
+        
+        with col3:
+            st.metric("Completeness", f"{metrics.completeness_score:.0f}%")
+            st.metric("With References", metrics.issues_with_references)
+        
+        if warnings:
+            st.warning("**Quality Warnings:**")
+            for warning in warnings:
+                st.write(warning)
+        
+        if suggestions:
+            st.info("**Suggestions for Improvement:**")
+            for suggestion in suggestions:
+                st.write(suggestion)
+
+def display_image_quality_report(page_images, scale_note):
+    """Display image quality report in Streamlit"""
+    with st.expander("🔍 Image Quality & Scale Analysis"):
+        overall_suitable = True
+        
+        for page_img in page_images:
+            quality = ImageQualityChecker.check_image_quality(page_img.png_bytes)
+            
+            st.write(f"**Page {page_img.page_index}**")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Resolution", f"{quality['width']}x{quality['height']}")
+            with col2:
+                st.metric("DPI", quality['dpi'])
+            with col3:
+                st.metric("Sharpness", quality['sharpness'])
+            with col4:
+                score_color = "🟢" if quality['quality_score'] >= 80 else "🟡" if quality['quality_score'] >= 60 else "🔴"
+                st.metric("Quality", f"{score_color} {quality['quality_score']}")
+            
+            if quality['warnings']:
+                for warning in quality['warnings']:
+                    st.warning(warning)
+                overall_suitable = False
+            else:
+                st.success("✅ Image quality suitable for detailed review")
+            
+            st.divider()
+        
+        # Scale verification
+        st.subheader("Scale Verification")
+        scale_info = ScaleVerifier.suggest_measurement_extraction(scale_note, 200)
+        st.info(scale_info)
+        
+        return overall_suitable
+
+def display_comparison(comparison: dict):
+    """Display comparison results in Streamlit"""
+    st.subheader("📊 Comparison with Previous Review")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "Previous Issues",
+            comparison["old_issue_count"]
+        )
+    
+    with col2:
+        st.metric(
+            "Current Issues", 
+            comparison["new_issue_count"],
+            delta=comparison["new_issue_count"] - comparison["old_issue_count"],
+            delta_color="inverse"
+        )
+    
+    with col3:
+        st.metric(
+            "Resolved",
+            comparison["resolved_count"],
+            delta=comparison["resolved_count"],
+            delta_color="normal"
+        )
+    
+    with col4:
+        st.metric(
+            "New Issues",
+            comparison["new_issues_count"],
+            delta=comparison["new_issues_count"],
+            delta_color="inverse"
+        )
+    
+    if comparison["improvement_percentage"] > 0:
+        st.success(f"✅ Overall improvement: {comparison['improvement_percentage']:.1f}% reduction in issues")
+    elif comparison["improvement_percentage"] < 0:
+        st.warning(f"⚠️ Issue count increased by {abs(comparison['improvement_percentage']):.1f}%")
+    else:
+        st.info("Issue count unchanged")
+
+def display_results(result):
+    """Display results with interactive issue management"""
+    st.success("✅ Review Complete!")
+    
+    IssueManager.display_summary_stats()
+    
+    # Overall Summary
+    if result.overall_summary:
+        st.subheader("Overall Summary")
+        st.write(result.overall_summary)
+    
+    # Display quality metrics
+    display_quality_metrics(result)
+    
+    # Display each page's results with interactive controls
+    for page in result.pages:
+        with st.expander(f"📄 Page {page.page_index} — {page.page_label}", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Sheet Number:** {page.sheet_number or 'N/A'}")
+            with col2:
+                st.write(f"**Sheet Title:** {page.sheet_title or 'N/A'}")
+            
+            if page.summary:
+                st.write("**Summary:**")
+                st.info(page.summary)
+            
+            if page.issues:
+                st.write(f"**Issues Found:** {len(page.issues)}")
+                for idx, issue in enumerate(page.issues, 1):
+                    IssueManager.display_interactive_issue(
+                        page.page_index, idx, issue.model_dump()
+                    )
+            else:
+                st.warning("No issues reported for this page.")
+    
+    # Export with annotations
+    col1, col2 = st.columns(2)
+    with col1:
+        annotated_json = IssueManager.export_with_annotations(result)
+        st.download_button(
+            "📥 Download Annotated Review (JSON)",
+            annotated_json,
+            file_name="annotated_review.json",
+            mime="application/json"
+        )
+    
+    with col2:
+        if st.button("🔄 Reset All Annotations"):
+            st.session_state.dismissed_issues = set()
+            st.session_state.issue_notes = {}
+            st.session_state.issue_severity_overrides = {}
+            st.rerun()
 
 def _get_app_version() -> str:
     try:
@@ -40,17 +349,36 @@ def main():
     page_texts = extract_page_texts(pdf_bytes)
     title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
     selected = []
-
     include_all = st.checkbox("Include all pages")
 
     for p in pages:
         with st.expander(f"Page {p.page_index}"):
             st.image(p.png_bytes, use_container_width=True)
-            include_page = st.checkbox(
-                "Include",
-                key=f"include_page_{p.page_index}",
-                disabled=include_all
-            )
+            
+            # Auto-detect page type
+            title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
+            page_text = page_texts.get(p.page_index, "")
+            detected_type = detect_page_type(page_text, title_block)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                include_page = st.checkbox(
+                    "Include",
+                    key=f"include_page_{p.page_index}",
+                    disabled=include_all,
+                    value=include_all
+                )
+            
+            with col2:
+                page_type = st.selectbox(
+                    "Page Type",
+                    ["Floor Plan", "Interior Elevation", "Door Schedule", "Reflected Ceiling Plan", "Other"],
+                    index=["Floor Plan", "Interior Elevation", "Door Schedule", "Reflected Ceiling Plan", "Other"].index(detected_type),
+                    key=f"page_type_{p.page_index}",
+                    disabled=not (include_all or include_page)
+                )
+            
             if include_all or include_page:
                 title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
                 sheet_number, sheet_title = extract_sheet_metadata(
@@ -99,10 +427,65 @@ def main():
             st.exception(e)
             st.stop()
 
-        save_review(project_name, ruleset, scale_note, result.model_dump_json())
-        pdf = build_pdf_report(result)
+        api_key = st.secrets.get("OPENAI_API_KEY", "")
+        if not api_key:
+            st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+            st.stop()
 
-        st.download_button("Download PDF Report", pdf, file_name="review.pdf")
+        model_name = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+        
+        st.info(f"🤖 Using model: {model_name}")
+        st.info(f"📊 Analyzing {len(selected)} page(s) with ruleset: {ruleset}")
+
+        try:
+            with st.spinner("🔍 Running accessibility review... This may take 30-60 seconds per page."):
+                result = run_review(
+                    api_key=api_key,
+                    project_name=project_name.strip(),
+                    ruleset=ruleset,
+                    scale_note=scale_note,
+                    page_payloads=selected,
+                    model_name=model_name
+                )
+            
+            # Debug: Show raw result structure
+            with st.expander("🔧 Debug: Raw Result Data"):
+                st.json(result.model_dump())
+            
+            # Display results on screen
+            display_results(result)
+            
+            # Check for previous reviews
+            history = get_project_review_history(project_name.strip(), limit=2)
+            if len(history) >= 2:
+                st.info("📂 Previous review found for this project")
+                
+                if st.checkbox("Compare with previous review"):
+                    old_review = history[1]["result"]
+                    new_review = result.model_dump()
+                    
+                    comparison = compare_reviews(old_review, new_review)
+                    display_comparison(comparison)
+            
+            # Save to database
+            save_review(project_name.strip(), ruleset, scale_note, result.model_dump_json())
+            st.success("💾 Review saved to database")
+            
+            # Generate and offer PDF download
+            with st.spinner("Generating PDF report..."):
+                pdf = build_pdf_report(result)
+            
+            st.download_button(
+                "📥 Download PDF Report", 
+                pdf, 
+                file_name=f"{project_name.replace(' ', '_')}_review.pdf",
+                mime="application/pdf"
+            )
+            
+        except Exception as e:
+            st.error("❌ Error during review:")
+            st.exception(e)
+            st.stop()
 
 if __name__ == "__main__":
     main()
