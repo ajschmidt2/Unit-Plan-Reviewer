@@ -30,11 +30,23 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads):
             "image_url": {"url": _png_to_data_url(p["png_bytes"])}
         })
 
-    resp = client.responses.create(
-        model="gpt-4.1-mini",
-        instructions=SYSTEM_INSTRUCTIONS,
-        input=[{"role": "user", "content": content}],
-        response_format={"type": "json_object"}
-    )
+    if hasattr(client, "responses"):
+        resp = client.responses.create(
+            model="gpt-4.1-mini",
+            instructions=SYSTEM_INSTRUCTIONS,
+            input=[{"role": "user", "content": content}],
+            response_format={"type": "json_object"}
+        )
+        output_text = resp.output_text
+    else:
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+                {"role": "user", "content": content}
+            ],
+            response_format={"type": "json_object"}
+        )
+        output_text = resp.choices[0].message.content
 
-    return ReviewResult.model_validate_json(resp.output_text)
+    return ReviewResult.model_validate_json(output_text)
