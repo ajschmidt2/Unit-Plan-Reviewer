@@ -38,7 +38,6 @@ A Streamlit web app that reviews Revit-exported **vector PDF** unit plan sheets 
 - **Pydantic** (structured JSON validation)
 - **ReportLab** (PDF report generation)
 - **SQLite** (history storage)
-- **bcrypt** (password hashing)
 
 ---
 
@@ -93,15 +92,7 @@ Create `.streamlit/secrets.toml` (do not commit):
 
 ```toml
 OPENAI_API_KEY = "sk-..."
-APP_PASSWORD_HASH = "$2b$12$..."
-```
-
-Generate a bcrypt hash:
-
-```python
-import bcrypt
-pw = b"YOUR_PASSWORD_HERE"
-print(bcrypt.hashpw(pw, bcrypt.gensalt()).decode())
+APP_PASSWORD = "mySimplePassword123"
 ```
 
 ---
