@@ -70,10 +70,21 @@ def wrap_text(c, text, x, y, max_width, font_name="Helvetica", font_size=9, lead
     # Return new y position
     return y - h - (leading * 0.5)
 
-def build_pdf_report(result):
+def _severity_color(severity: str) -> tuple:
+    colors = {
+        "High": (0.78, 0.1, 0.1),
+        "Medium": (0.9, 0.55, 0.1),
+        "Low": (0.15, 0.6, 0.3),
+    }
+    return colors.get(severity, (0, 0, 0))
+
+
+def build_pdf_report(result, issue_notes=None, severity_overrides=None):
     buf = BytesIO()
     c = FooterCanvas(buf, pagesize=letter)
     w, h = letter
+    issue_notes = issue_notes or {}
+    severity_overrides = severity_overrides or {}
     
     # Define margins
     left_margin = inch
@@ -150,7 +161,8 @@ def build_pdf_report(result):
         
         # Sheet info
         c.setFont("Helvetica", 9)
-        sheet_text = f"Sheet: {page.sheet_number or 'N/A'} — {page.sheet_title or 'N/A'}"
+        sheet_id = getattr(page, "sheet_id", None) or getattr(page, "sheet_number", None)
+        sheet_text = f"Sheet: {sheet_id or 'N/A'} — {page.sheet_title or 'N/A'}"
         c.drawString(left_margin, y, sheet_text)
         y -= 0.25 * inch
         
@@ -170,17 +182,24 @@ def build_pdf_report(result):
             c.drawString(left_margin, y, "✓ No issues reported for this page.")
             y -= 0.4 * inch
         else:
-            for issue in page.issues:
+            for issue_idx, issue in enumerate(page.issues, 1):
                 # Check if we need a new page before each issue
                 if y < 2.5 * inch:
                     c.showPage()
                     y = h - inch
                 
                 # Issue number and severity badge
+                issue_id = f"p{page.page_index}_i{issue_idx}"
+                resolved_severity = severity_overrides.get(issue_id, issue.severity)
                 c.setFont("Helvetica-Bold", 10)
+                c.setFillColorRGB(*_severity_color(resolved_severity))
                 severity_symbol = {"High": "●", "Medium": "◐", "Low": "○"}
-                header = f"{issue_num}. {severity_symbol.get(issue.severity, '○')} [{issue.severity}] {issue.location_hint}"
+                header = (
+                    f"{issue_num}. {severity_symbol.get(resolved_severity, '○')} "
+                    f"[{resolved_severity}] {issue.location_hint}"
+                )
                 c.drawString(left_margin, y, header)
+                c.setFillColorRGB(0, 0, 0)
                 y -= 0.2 * inch
                 
                 # Confidence indicator
@@ -211,6 +230,13 @@ def build_pdf_report(result):
                     c.setFont("Helvetica-Oblique", 8)
                     ref_text = f"<b>Reference:</b> {issue.reference}"
                     y = wrap_text(c, ref_text, left_margin + 0.2*inch, y, max_text_width - 0.2*inch, "Helvetica-Oblique", 8)
+                    y -= 0.15 * inch
+
+                note_text = issue_notes.get(issue_id, "")
+                if note_text:
+                    c.setFont("Helvetica", 9)
+                    note_para = f"<b>Notes:</b> {note_text}"
+                    y = wrap_text(c, note_para, left_margin + 0.2*inch, y, max_text_width - 0.2*inch, "Helvetica", 9)
                     y -= 0.15 * inch
                 
                 y -= 0.3 * inch
