@@ -7,6 +7,9 @@ from src.pdf_utils import (
     extract_page_texts,
     extract_sheet_metadata,
     extract_title_block_texts,
+    detect_page_type,
+    ImageQualityChecker,
+    ScaleVerifier,
 )
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
@@ -320,40 +323,6 @@ def display_results(result):
             st.session_state.issue_severity_overrides = {}
             st.rerun()
 
-def _get_app_version() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            text=True
-        ).strip()
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return "unknown"
-
-def _get_app_version() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            text=True
-        ).strip()
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return "unknown"
-
-def detect_page_type(page_text: str, title_block: str) -> str:
-    combined = f"{page_text}\n{title_block}".upper()
-    keywords = {
-        "SITE PLAN": "Site Plan",
-        "FLOOR PLAN": "Floor Plan",
-        "UNIT PLAN": "Unit Plan",
-        "ENLARGED": "Enlarged Plan",
-        "ELEVATION": "Elevation",
-        "SECTION": "Section",
-        "DETAIL": "Detail",
-    }
-    for key, label in keywords.items():
-        if key in combined:
-            return label
-    return "Floor Plan"
-
 def main():
     require_login()
     init_db()
@@ -370,9 +339,20 @@ def main():
         st.stop()
 
     pdf_bytes = uploaded.getvalue()
-    pages = pdf_to_page_images(pdf_bytes)
-    page_texts = extract_page_texts(pdf_bytes)
-    title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
+    
+    with st.spinner("Processing PDF..."):
+        pages = pdf_to_page_images(pdf_bytes)
+        page_texts = extract_page_texts(pdf_bytes)
+        title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
+    
+    st.success(f"✅ Loaded {len(pages)} pages from PDF")
+    
+    # Display image quality analysis
+    quality_ok = display_image_quality_report(pages, scale_note)
+    
+    if not quality_ok:
+        st.warning("⚠️ Some image quality issues detected. Review accuracy may be affected.")
+    
     selected = []
     include_all = st.checkbox("Include all pages")
 
@@ -405,15 +385,16 @@ def main():
                 )
             
             if include_all or include_page:
-                title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
-                page_text = page_texts.get(p.page_index, "")
-                detected_type = detect_page_type(page_text, title_block)
                 sheet_number, sheet_title = extract_sheet_metadata(
                     title_block or page_text
                 )
+                
+                # Show extracted metadata for debugging
+                st.caption(f"Detected: Sheet {sheet_number or 'N/A'} - {sheet_title or 'N/A'}")
+                
                 selected.append({
                     "page_index": p.page_index,
-                    "page_label": detected_type,
+                    "page_label": page_type,
                     "png_bytes": p.png_bytes,
                     "sheet_number_hint": sheet_number,
                     "sheet_title_hint": sheet_title,
@@ -423,59 +404,15 @@ def main():
                     )
                 })
 
-    st.write("Selected pages:", [p["page_index"] for p in selected])
+    st.write(f"**Selected pages:** {[p['page_index'] for p in selected]}")
 
-    if st.button("Run Review"):
+    if st.button("Run Review", type="primary"):
         if not project_name.strip():
             st.error("Enter a Project Name first.")
             st.stop()
 
         if not selected:
             st.warning("Select at least one page (check Include) before running the review.")
-            st.stop()
-
-        api_key = st.secrets.get("OPENAI_API_KEY", "")
-        if not api_key:
-            st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
-            st.stop()
-
-        model_name = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
-
-        try:
-            result = run_review(
-                api_key=api_key,
-                project_name=project_name.strip(),
-                ruleset=ruleset,
-                scale_note=scale_note,
-                page_payloads=selected,
-                model_name=model_name
-            )
-        except Exception as e:
-            st.exception(e)
-            st.stop()
-
-        if not selected:
-            st.warning("Select at least one page (check Include) before running the review.")
-            st.stop()
-
-        api_key = st.secrets.get("OPENAI_API_KEY", "")
-        if not api_key:
-            st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
-            st.stop()
-
-        model_name = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
-
-        try:
-            result = run_review(
-                api_key=api_key,
-                project_name=project_name.strip(),
-                ruleset=ruleset,
-                scale_note=scale_note,
-                page_payloads=selected,
-                model_name=model_name
-            )
-        except Exception as e:
-            st.exception(e)
             st.stop()
 
         api_key = st.secrets.get("OPENAI_API_KEY", "")
