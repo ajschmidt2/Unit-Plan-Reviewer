@@ -34,3 +34,30 @@ def extract_pdf_text(pdf_bytes: bytes, max_pages: int = 30) -> str:
     for i in range(min(len(doc), max_pages)):
         texts.append(doc.load_page(i).get_text("text"))
     return "\n\n---\n\n".join(texts)
+
+def extract_page_texts(pdf_bytes: bytes, max_pages: int = 80) -> dict[int, str]:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = {}
+    for i in range(min(len(doc), max_pages)):
+        out[i] = doc.load_page(i).get_text("text")
+    return out
+
+def extract_title_block_texts(
+    pdf_bytes: bytes,
+    max_pages: int = 30,
+    right_fraction: float = 0.6
+) -> List[str]:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = []
+    for i in range(min(len(doc), max_pages)):
+        page = doc.load_page(i)
+        blocks = page.get_text("blocks")
+        width = page.rect.width
+        right_edge = width * right_fraction
+        pieces = []
+        for block in blocks:
+            x0, _, _, _, text, *_ = block
+            if x0 >= right_edge and text.strip():
+                pieces.append(text.strip())
+        out.append("\n".join(pieces))
+    return out

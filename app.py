@@ -1,6 +1,6 @@
 import streamlit as st
 from src.auth import require_login
-from src.pdf_utils import pdf_to_page_images, extract_pdf_text
+from src.pdf_utils import pdf_to_page_images, extract_page_texts
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
 from src.storage import init_db, save_review
@@ -19,7 +19,9 @@ def main():
     if not uploaded:
         st.stop()
 
-    pages = pdf_to_page_images(uploaded.getvalue())
+    pdf_bytes = uploaded.getvalue()
+    pages = pdf_to_page_images(pdf_bytes)
+    page_texts = extract_page_texts(pdf_bytes)
     selected = []
 
     include_all = st.checkbox("Include all pages")
@@ -36,17 +38,40 @@ def main():
                 selected.append({
                     "page_index": p.page_index,
                     "page_label": "Floor Plan",
-                    "png_bytes": p.png_bytes
+                    "png_bytes": p.png_bytes,
+                    "extra_text": page_texts.get(p.page_index, "")
                 })
 
+    st.write("Selected pages:", [p["page_index"] for p in selected])
+
     if st.button("Run Review"):
-        result = run_review(
-            api_key=st.secrets["OPENAI_API_KEY"],
-            project_name=project_name,
-            ruleset=ruleset,
-            scale_note=scale_note,
-            page_payloads=selected
-        )
+        if not project_name.strip():
+            st.error("Enter a Project Name first.")
+            st.stop()
+
+        if not selected:
+            st.warning("Select at least one page (check Include) before running the review.")
+            st.stop()
+
+        api_key = st.secrets.get("OPENAI_API_KEY", "")
+        if not api_key:
+            st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+            st.stop()
+
+        model_name = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+
+        try:
+            result = run_review(
+                api_key=api_key,
+                project_name=project_name.strip(),
+                ruleset=ruleset,
+                scale_note=scale_note,
+                page_payloads=selected,
+                model_name=model_name
+            )
+        except Exception as e:
+            st.exception(e)
+            st.stop()
 
         save_review(project_name, ruleset, scale_note, result.model_dump_json())
         pdf = build_pdf_report(result)
