@@ -1,3 +1,4 @@
+import subprocess
 import streamlit as st
 from src.auth import require_login
 from src.pdf_utils import pdf_to_page_images, extract_page_texts, extract_title_block_texts
@@ -5,11 +6,21 @@ from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
 from src.storage import init_db, save_review
 
+def _get_app_version() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            text=True
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return "unknown"
+
 def main():
     require_login()
     init_db()
 
     st.title("Unit Plan Reviewer")
+    st.caption(f"Build: {_get_app_version()}")
 
     project_name = st.text_input("Project Name")
     ruleset = st.selectbox("Ruleset", ["FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"])
