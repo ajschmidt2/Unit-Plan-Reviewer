@@ -3,6 +3,7 @@ from typing import List
 import fitz
 from PIL import Image
 import io
+import re
 
 @dataclass
 class PageImage:
@@ -34,3 +35,63 @@ def extract_pdf_text(pdf_bytes: bytes, max_pages: int = 30) -> str:
     for i in range(min(len(doc), max_pages)):
         texts.append(doc.load_page(i).get_text("text"))
     return "\n\n---\n\n".join(texts)
+
+def extract_page_texts(pdf_bytes: bytes, max_pages: int = 80) -> dict[int, str]:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = {}
+    for i in range(min(len(doc), max_pages)):
+        out[i] = doc.load_page(i).get_text("text")
+    return out
+
+def extract_sheet_metadata(text: str) -> tuple[str, str]:
+    if not text:
+        return "", ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    sheet_number = ""
+    sheet_title = ""
+    number_pattern = re.compile(r"\b[A-Z]{1,4}-?\d{1,4}[A-Z]?\b")
+    for idx, line in enumerate(lines):
+        if "SHEET" in line.upper() and not sheet_number:
+            match = number_pattern.search(line)
+            if match:
+                sheet_number = match.group(0)
+                if idx + 1 < len(lines):
+                    sheet_title = lines[idx + 1]
+                break
+    for idx, line in enumerate(lines):
+        if not sheet_number:
+            match = number_pattern.search(line)
+            if match:
+                sheet_number = match.group(0)
+                if idx + 1 < len(lines):
+                    candidate = lines[idx + 1]
+                    if not number_pattern.search(candidate):
+                        sheet_title = candidate
+        if sheet_title:
+            break
+    if not sheet_title:
+        for line in lines:
+            if "PLAN" in line.upper():
+                sheet_title = line
+                break
+    return sheet_number, sheet_title
+
+def extract_title_block_texts(
+    pdf_bytes: bytes,
+    max_pages: int = 30,
+    right_fraction: float = 0.6
+) -> List[str]:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = []
+    for i in range(min(len(doc), max_pages)):
+        page = doc.load_page(i)
+        blocks = page.get_text("blocks")
+        width = page.rect.width
+        right_edge = width * right_fraction
+        pieces = []
+        for block in blocks:
+            x0, _, _, _, text, *_ = block
+            if x0 >= right_edge and text.strip():
+                pieces.append(text.strip())
+        out.append("\n".join(pieces))
+    return out
