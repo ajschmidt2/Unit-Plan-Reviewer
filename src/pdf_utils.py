@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Dict, Optional
 import fitz
-from PIL import Image
+from PIL import Image, ImageStat
 import io
 import re
 

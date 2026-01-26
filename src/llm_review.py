@@ -4,6 +4,128 @@ from typing import List
 from openai import OpenAI
 from .schemas import ReviewResult
 
+# Page-specific analysis guides
+PAGE_TYPE_ANALYSIS = {
+    "Floor Plan": {
+        "focus_areas": [
+            "Door clear opening widths at all entries (32\" min for FHA)",
+            "Accessible route widths (36\" minimum continuous)",
+            "Maneuvering clearances at doors (pull side, push side, latch side)",
+            "Bathroom turning spaces (60\" diameter circle or T-turn)",
+            "Kitchen work aisle width (40\" minimum)",
+            "Hallway widths throughout unit",
+            "Bedroom approach and maneuvering space",
+        ],
+        "critical_measurements": [
+            "Door openings", "Route widths", "Bathroom clearances", "Kitchen clearances"
+        ]
+    },
+    "Interior Elevation": {
+        "focus_areas": [
+            "Grab bar heights and locations (33-36\" AFF typical)",
+            "Counter heights (34\" max for accessible counters)",
+            "Mirror heights (bottom edge 40\" max AFF)",
+            "Electrical outlet and switch heights",
+            "Window sill heights (operable windows 44\" max)",
+            "Shower controls locations and heights (38-48\" AFF)",
+        ],
+        "critical_measurements": [
+            "Grab bar mounting heights", "Counter heights", "Control heights"
+        ]
+    },
+    "Door Schedule": {
+        "focus_areas": [
+            "Clear opening widths (should be 32\" minimum for FHA)",
+            "Door hardware specifications (lever handles required)",
+            "Threshold heights (1/2\" max for exterior, 1/4\" max interior)",
+            "Door types and swing directions",
+        ],
+        "critical_measurements": [
+            "Clear opening width", "Threshold height"
+        ]
+    },
+    "Reflected Ceiling Plan": {
+        "focus_areas": [
+            "Ceiling height changes",
+            "Protruding objects below 80\" (light fixtures, soffits)",
+            "Light fixture heights and protrusions from wall",
+        ],
+        "critical_measurements": [
+            "Clearance heights", "Protrusion distances"
+        ]
+    },
+    "Other": {
+        "focus_areas": [
+            "General accessibility compliance",
+            "Clear dimensions and measurements",
+            "Compliance with specified ruleset"
+        ],
+        "critical_measurements": []
+    }
+}
+
+def build_enhanced_prompt(page_label: str, ruleset: str) -> str:
+    """Build a targeted prompt based on page type and ruleset"""
+    
+    analysis_guide = PAGE_TYPE_ANALYSIS.get(page_label, PAGE_TYPE_ANALYSIS["Other"])
+    
+    prompt = f"""
+For this {page_label}, focus your accessibility review on these specific areas:
+
+FOCUS AREAS FOR {page_label.upper()}:
+"""
+    for i, area in enumerate(analysis_guide["focus_areas"], 1):
+        prompt += f"\n{i}. {area}"
+    
+    prompt += f"""
+
+CRITICAL MEASUREMENTS TO VERIFY:
+"""
+    for measurement in analysis_guide["critical_measurements"]:
+        prompt += f"\n- {measurement}"
+    
+    prompt += f"""
+
+MEASUREMENT EXTRACTION:
+- Actively look for dimension lines, text labels, and scale bars on the drawing
+- Report actual measurements you can read: "Door A: 32\" clear opening (measured from dimension line)"
+- If dimensions aren't clearly labeled, note: "Door width not dimensioned - requires verification"
+- Include measurements in your findings when available
+- For each issue, try to provide the measured value vs. required value
+
+RULESET REQUIREMENTS ({ruleset}):
+"""
+    
+    if ruleset == "FHA":
+        prompt += """
+- Doors: 32" clear opening (nominal 2'10" door)
+- Routes: 36" minimum width continuous
+- Bathrooms: 60" turning circle OR 60" T-turn space
+- Kitchen: 40" minimum work aisle between opposing base cabinets
+- Maneuvering clearances: 18" pull side, 0" push side minimum (varies by approach)
+- Hardware: Lever handles or other operable with one hand, no tight grasping
+"""
+    elif "TYPE_A" in ruleset:
+        prompt += """
+- Doors: 32" clear opening minimum
+- Routes: 36" minimum width continuous
+- Bathrooms: 60" turning circle required (T-turn not acceptable)
+- Kitchen: 40" minimum work aisle, accessible sink and cooktop required
+- Enhanced clearances per ANSI A117.1 Type A
+- Grab bar blocking required at all toilet and bathtub/shower locations
+"""
+    elif "TYPE_B" in ruleset:
+        prompt += """
+- Doors: 32" clear opening (31.75" acceptable at bathroom doors)
+- Routes: 36" minimum width
+- Bathrooms: Reinforced grab bar backing required (actual bars not required initially)
+- Kitchen: 40" work aisle if U-shaped layout
+- Per ANSI A117.1 Type B (less stringent than Type A)
+- Usable doors, accessible routes, and reinforcement only
+"""
+    
+    return prompt
+
 SYSTEM_INSTRUCTIONS = """
 You are an accessibility plan reviewer for UNIT plans.
 Flag likely issues when uncertain and assign confidence levels.
@@ -132,13 +254,21 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_
     client = OpenAI(api_key=api_key)
 
     content = [
-        {"type": "text", "text": f"Project: {project_name}\nRuleset: {ruleset}\nScale: {scale_note}"}
+        {"type": "text", "text": f"Project: {project_name}\nRuleset: {ruleset}\nScale: {scale_note}\n\nPlease review the following architectural plans for accessibility compliance. Provide at least 3 issues per page and extract measurements when visible."}
     ]
 
     for p in page_payloads:
-        content.append({"type": "text", "text": f"PAGE {p['page_index']} — {p['page_label']}"})
+        page_label = p.get('page_label', 'Floor Plan')
+        
+        # Add page-specific analysis guide
+        enhanced_prompt = build_enhanced_prompt(page_label, ruleset)
+        
+        content.append({"type": "text", "text": f"\n\n=== PAGE {p['page_index']} — {page_label} ==="})
+        content.append({"type": "text", "text": enhanced_prompt})
+        
         if p.get("extra_text"):
-            content.append({"type": "text", "text": p["extra_text"][:4000]})
+            content.append({"type": "text", "text": f"Extracted text from this page:\n{p['extra_text'][:4000]}"})
+        
         content.append({
             "type": "image_url",
             "image_url": {"url": _png_to_data_url(p["png_bytes"])}
