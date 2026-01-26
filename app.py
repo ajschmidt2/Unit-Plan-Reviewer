@@ -35,6 +35,7 @@ def main():
                 disabled=include_all
             )
             if include_all or include_page:
+                title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
                 selected.append({
                     "page_index": p.page_index,
                     "page_label": "Floor Plan",
