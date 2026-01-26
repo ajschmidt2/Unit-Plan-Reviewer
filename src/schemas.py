@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Dict
 
 Ruleset = Literal["FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"]
-PageType = Literal["Floor Plan", "Interior Elevation", "Door Schedule", "Reflected Ceiling Plan", "Other"]
+PageType = str
 
 class Issue(BaseModel):
     severity: Literal["High", "Medium", "Low"]
@@ -16,10 +16,10 @@ class Issue(BaseModel):
 class PageReview(BaseModel):
     page_index: int
     page_label: PageType
-    sheet_number: str
-    sheet_title: str
-    summary: str
-    issues: List[Issue]
+    sheet_id: Optional[str] = None
+    sheet_title: Optional[str] = None
+    summary: str = ""
+    issues: List[Issue] = Field(default_factory=list)
 
 class ReviewResult(BaseModel):
     project_name: str
