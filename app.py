@@ -13,7 +13,7 @@ def main():
 
     project_name = st.text_input("Project Name")
     ruleset = st.selectbox("Ruleset", ["FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"])
-    scale_note = st.text_input("Scale Note", "1/8\" = 1'-0\"")
+    scale_note = st.text_input("Scale Note", "1/4\" = 1'-0\"")
 
     uploaded = st.file_uploader("Upload PDF", type=["pdf"])
     if not uploaded:
