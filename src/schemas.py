@@ -14,6 +14,8 @@ class Issue(BaseModel):
 class PageReview(BaseModel):
     page_index: int
     page_label: str
+    sheet_number: str
+    sheet_title: str
     summary: str
     issues: List[Issue]
 
