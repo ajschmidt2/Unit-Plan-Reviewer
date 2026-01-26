@@ -79,12 +79,13 @@ def _severity_color(severity: str) -> tuple:
     return colors.get(severity, (0, 0, 0))
 
 
-def build_pdf_report(result, issue_notes=None, severity_overrides=None):
+def build_pdf_report(result, issue_notes=None, severity_overrides=None, dismissed_issues=None):
     buf = BytesIO()
     c = FooterCanvas(buf, pagesize=letter)
     w, h = letter
     issue_notes = issue_notes or {}
     severity_overrides = severity_overrides or {}
+    dismissed_issues = dismissed_issues or set()
     
     # Define margins
     left_margin = inch
@@ -190,6 +191,8 @@ def build_pdf_report(result, issue_notes=None, severity_overrides=None):
                 
                 # Issue number and severity badge
                 issue_id = f"p{page.page_index}_i{issue_idx}"
+                if issue_id in dismissed_issues:
+                    continue
                 resolved_severity = severity_overrides.get(issue_id, issue.severity)
                 c.setFont("Helvetica-Bold", 10)
                 c.setFillColorRGB(*_severity_color(resolved_severity))
