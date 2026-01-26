@@ -39,6 +39,67 @@ def _coerce_json(text: str) -> dict:
             return json.loads(text[start:end + 1])
         raise ValueError(f"LLM response was not valid JSON: {text[:2000]}")
 
+def _coerce_choice(value: str | None, allowed: set[str], fallback: str) -> str:
+    if value in allowed:
+        return value
+    return fallback
+
+def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_payloads):
+    if not isinstance(payload, dict):
+        raise ValueError("LLM response was not an object.")
+    data = dict(payload)
+    data.setdefault("project_name", project_name or "")
+    data.setdefault("ruleset", ruleset)
+    data.setdefault("scale_note", scale_note or "")
+    data.setdefault("overall_summary", "")
+
+    pages = data.get("pages")
+    if not isinstance(pages, list):
+        pages = []
+    normalized_pages = []
+    for idx, page in enumerate(pages):
+        if not isinstance(page, dict):
+            continue
+        if page.get("page_index") is None:
+            page_index = page_payloads[idx].get("page_index", idx) if idx < len(page_payloads) else idx
+        else:
+            page_index = page.get("page_index")
+        if page.get("page_label") is None:
+            page_label = page_payloads[idx].get("page_label", "") if idx < len(page_payloads) else ""
+        else:
+            page_label = page.get("page_label")
+        summary = page.get("summary", "")
+        issues = page.get("issues", [])
+        if not isinstance(issues, list):
+            issues = []
+        normalized_issues = []
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            severity = _coerce_choice(issue.get("severity"), {"High", "Medium", "Low"}, "Low")
+            confidence = _coerce_choice(issue.get("confidence"), {"High", "Medium", "Low"}, "Low")
+            normalized_issues.append(
+                {
+                    "severity": severity,
+                    "location_hint": issue.get("location_hint", ""),
+                    "finding": issue.get("finding", ""),
+                    "recommendation": issue.get("recommendation", ""),
+                    "reference": issue.get("reference"),
+                    "confidence": confidence,
+                }
+            )
+        normalized_pages.append(
+            {
+                "page_index": page_index,
+                "page_label": page_label,
+                "summary": summary,
+                "issues": normalized_issues,
+            }
+        )
+    data["pages"] = normalized_pages
+    data["ruleset"] = _coerce_choice(data.get("ruleset"), {"FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"}, ruleset)
+    return data
+
 def run_review(api_key, project_name, ruleset, scale_note, page_payloads):
     client = OpenAI(api_key=api_key)
 
@@ -73,5 +134,6 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads):
         )
     output_text = _extract_output_text(resp)
     payload = _coerce_json(output_text)
+    payload = _normalize_payload(payload, project_name, ruleset, scale_note, page_payloads)
 
     return ReviewResult.model_validate(payload)
