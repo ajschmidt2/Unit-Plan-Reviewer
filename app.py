@@ -1,6 +1,6 @@
 import streamlit as st
 from src.auth import require_login
-from src.pdf_utils import pdf_to_page_images, extract_pdf_text
+from src.pdf_utils import pdf_to_page_images, extract_pdf_text, extract_title_block_texts
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
 from src.storage import init_db, save_review
@@ -19,7 +19,9 @@ def main():
     if not uploaded:
         st.stop()
 
-    pages = pdf_to_page_images(uploaded.getvalue())
+    pdf_bytes = uploaded.getvalue()
+    pages = pdf_to_page_images(pdf_bytes)
+    title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
     selected = []
 
     include_all = st.checkbox("Include all pages")
@@ -33,10 +35,12 @@ def main():
                 disabled=include_all
             )
             if include_all or include_page:
+                title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
                 selected.append({
                     "page_index": p.page_index,
                     "page_label": "Floor Plan",
-                    "png_bytes": p.png_bytes
+                    "png_bytes": p.png_bytes,
+                    "extra_text": f"Title block text (right side):\n{title_block}"
                 })
 
     if st.button("Run Review"):

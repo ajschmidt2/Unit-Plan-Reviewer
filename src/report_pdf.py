@@ -37,6 +37,14 @@ def build_pdf_report(result):
             f"Sheet: {page.sheet_number or 'N/A'} — {page.sheet_title or 'N/A'}"
         )
         y -= 0.25 * inch
+        c.setFont("Helvetica-Oblique", 8)
+        c.drawString(inch, y, "Review confirmation: Drawing image reviewed.")
+        y -= 0.2 * inch
+
+        if not page.issues:
+            c.setFont("Helvetica", 9)
+            c.drawString(inch, y, "No issues reported.")
+            y -= 0.2 * inch
 
         for issue in page.issues:
             c.setFont("Helvetica", 9)
