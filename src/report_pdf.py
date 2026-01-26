@@ -30,6 +30,13 @@ def build_pdf_report(result):
         c.setFont("Helvetica-Bold", 11)
         c.drawString(inch, y, f"Page {page.page_index} — {page.page_label}")
         y -= 0.25 * inch
+        c.setFont("Helvetica", 9)
+        c.drawString(
+            inch,
+            y,
+            f"Sheet: {page.sheet_number or 'N/A'} — {page.sheet_title or 'N/A'}"
+        )
+        y -= 0.25 * inch
 
         for issue in page.issues:
             c.setFont("Helvetica", 9)

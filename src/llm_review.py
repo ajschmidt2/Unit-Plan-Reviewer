@@ -8,6 +8,10 @@ SYSTEM_INSTRUCTIONS = """
 You are an accessibility plan reviewer for UNIT plans.
 Flag likely issues when uncertain and assign confidence levels.
 Do not invent measurements.
+Extract sheet number and sheet title from the drawing title block (usually right side).
+If a field is unknown, use an empty string (never omit required fields).
+Provide at least 3 issues per page; if few are visible, include low-confidence potential risks.
+Use clear, actionable findings and recommendations tied to FHA/ANSI rules.
 Return STRICT JSON matching the schema.
 """
 
@@ -68,6 +72,8 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
             page_label = page_payloads[idx].get("page_label", "") if idx < len(page_payloads) else ""
         else:
             page_label = page.get("page_label")
+        sheet_number = page.get("sheet_number", "")
+        sheet_title = page.get("sheet_title", "")
         summary = page.get("summary", "")
         issues = page.get("issues", [])
         if not isinstance(issues, list):
@@ -92,6 +98,8 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
             {
                 "page_index": page_index,
                 "page_label": page_label,
+                "sheet_number": sheet_number,
+                "sheet_title": sheet_title,
                 "summary": summary,
                 "issues": normalized_issues,
             }
