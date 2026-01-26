@@ -127,11 +127,24 @@ def build_pdf_report(result):
         sheet_text = f"Sheet: {page.sheet_number or 'N/A'} — {page.sheet_title or 'N/A'}"
         c.drawString(left_margin, y, sheet_text)
         y -= 0.25 * inch
-        
-        # Review confirmation
+        c.setFont("Helvetica", 9)
+        c.drawString(
+            inch,
+            y,
+            f"Sheet: {page.sheet_number or 'N/A'} — {page.sheet_title or 'N/A'}"
+        )
+        y -= 0.25 * inch
+        c.setFont("Helvetica", 9)
+        c.drawString(inch, y, f"Summary: {page.summary}")
+        y -= 0.25 * inch
         c.setFont("Helvetica-Oblique", 8)
-        c.drawString(left_margin, y, "Review confirmation: Drawing image reviewed by AI model.")
-        y -= 0.3 * inch
+        c.drawString(inch, y, "Review confirmation: Drawing image reviewed.")
+        y -= 0.2 * inch
+
+        if not page.issues:
+            c.setFont("Helvetica", 9)
+            c.drawString(inch, y, "No issues reported.")
+            y -= 0.2 * inch
 
         # Page summary with wrapping
         if page.summary:
