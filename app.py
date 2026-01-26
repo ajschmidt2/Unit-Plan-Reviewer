@@ -1,6 +1,6 @@
 import streamlit as st
 from src.auth import require_login
-from src.pdf_utils import pdf_to_page_images, extract_page_texts
+from src.pdf_utils import pdf_to_page_images, extract_page_texts, extract_title_block_texts
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
 from src.storage import init_db, save_review
@@ -22,6 +22,7 @@ def main():
     pdf_bytes = uploaded.getvalue()
     pages = pdf_to_page_images(pdf_bytes)
     page_texts = extract_page_texts(pdf_bytes)
+    title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
     selected = []
 
     include_all = st.checkbox("Include all pages")
@@ -40,7 +41,10 @@ def main():
                     "page_index": p.page_index,
                     "page_label": "Floor Plan",
                     "png_bytes": p.png_bytes,
-                    "extra_text": page_texts.get(p.page_index, "")
+                    "extra_text": (
+                        f"Page text:\n{page_texts.get(p.page_index, '')}\n\n"
+                        f"Title block text (right side):\n{title_block}"
+                    )
                 })
 
     st.write("Selected pages:", [p["page_index"] for p in selected])
