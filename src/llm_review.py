@@ -9,6 +9,8 @@ You are an accessibility plan reviewer for UNIT plans.
 Flag likely issues when uncertain and assign confidence levels.
 Do not invent measurements.
 Extract sheet number and sheet title from the drawing title block (usually right side).
+If possible, infer sheet number and sheet title from the page title block text and include it in location_hint,
+e.g., "A2.1 - Unit Plan / Bath 1".
 If a field is unknown, use an empty string (never omit required fields).
 Provide at least 3 issues per page; if few are visible, include low-confidence potential risks.
 Use clear, actionable findings and recommendations tied to FHA/ANSI rules.
@@ -108,7 +110,7 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
     data["ruleset"] = _coerce_choice(data.get("ruleset"), {"FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"}, ruleset)
     return data
 
-def run_review(api_key, project_name, ruleset, scale_note, page_payloads):
+def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_name="gpt-4o-mini"):
     client = OpenAI(api_key=api_key)
 
     content = [
@@ -126,14 +128,14 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads):
 
     if hasattr(client, "responses"):
         resp = client.responses.create(
-            model="gpt-4.1-mini",
+            model=model_name,
             instructions=SYSTEM_INSTRUCTIONS,
             input=[{"role": "user", "content": content}],
             response_format={"type": "json_object"}
         )
     else:
         resp = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=model_name,
             messages=[
                 {"role": "system", "content": SYSTEM_INSTRUCTIONS},
                 {"role": "user", "content": content}
