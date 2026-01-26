@@ -1,8 +1,130 @@
 import base64
 import json
-from typing import List
+from typing import List, Dict
 from openai import OpenAI
 from .schemas import ReviewResult
+
+# Page-specific analysis guides
+PAGE_TYPE_ANALYSIS = {
+    "Floor Plan": {
+        "focus_areas": [
+            "Door clear opening widths at all entries (32\" min for FHA)",
+            "Accessible route widths (36\" minimum continuous)",
+            "Maneuvering clearances at doors (pull side, push side, latch side)",
+            "Bathroom turning spaces (60\" diameter circle or T-turn)",
+            "Kitchen work aisle width (40\" minimum)",
+            "Hallway widths throughout unit",
+            "Bedroom approach and maneuvering space",
+        ],
+        "critical_measurements": [
+            "Door openings", "Route widths", "Bathroom clearances", "Kitchen clearances"
+        ]
+    },
+    "Interior Elevation": {
+        "focus_areas": [
+            "Grab bar heights and locations (33-36\" AFF typical)",
+            "Counter heights (34\" max for accessible counters)",
+            "Mirror heights (bottom edge 40\" max AFF)",
+            "Electrical outlet and switch heights",
+            "Window sill heights (operable windows 44\" max)",
+            "Shower controls locations and heights (38-48\" AFF)",
+        ],
+        "critical_measurements": [
+            "Grab bar mounting heights", "Counter heights", "Control heights"
+        ]
+    },
+    "Door Schedule": {
+        "focus_areas": [
+            "Clear opening widths (should be 32\" minimum for FHA)",
+            "Door hardware specifications (lever handles required)",
+            "Threshold heights (1/2\" max for exterior, 1/4\" max interior)",
+            "Door types and swing directions",
+        ],
+        "critical_measurements": [
+            "Clear opening width", "Threshold height"
+        ]
+    },
+    "Reflected Ceiling Plan": {
+        "focus_areas": [
+            "Ceiling height changes",
+            "Protruding objects below 80\" (light fixtures, soffits)",
+            "Light fixture heights and protrusions from wall",
+        ],
+        "critical_measurements": [
+            "Clearance heights", "Protrusion distances"
+        ]
+    },
+    "Other": {
+        "focus_areas": [
+            "General accessibility compliance",
+            "Clear dimensions and measurements",
+            "Compliance with specified ruleset"
+        ],
+        "critical_measurements": []
+    }
+}
+
+def build_enhanced_prompt(page_label: str, ruleset: str) -> str:
+    """Build a targeted prompt based on page type and ruleset"""
+    
+    analysis_guide = PAGE_TYPE_ANALYSIS.get(page_label, PAGE_TYPE_ANALYSIS["Other"])
+    
+    prompt = f"""
+For this {page_label}, focus your accessibility review on these specific areas:
+
+FOCUS AREAS FOR {page_label.upper()}:
+"""
+    for i, area in enumerate(analysis_guide["focus_areas"], 1):
+        prompt += f"\n{i}. {area}"
+    
+    prompt += f"""
+
+CRITICAL MEASUREMENTS TO VERIFY:
+"""
+    for measurement in analysis_guide["critical_measurements"]:
+        prompt += f"\n- {measurement}"
+    
+    prompt += f"""
+
+MEASUREMENT EXTRACTION:
+- Actively look for dimension lines, text labels, and scale bars on the drawing
+- Report actual measurements you can read: "Door A: 32\" clear opening (measured from dimension line)"
+- If dimensions aren't clearly labeled, note: "Door width not dimensioned - requires verification"
+- Include measurements in your findings when available
+- For each issue, try to provide the measured value vs. required value
+
+RULESET REQUIREMENTS ({ruleset}):
+"""
+    
+    if ruleset == "FHA":
+        prompt += """
+- Doors: 32" clear opening (nominal 2'10" door)
+- Routes: 36" minimum width continuous
+- Bathrooms: 60" turning circle OR 60" T-turn space
+- Kitchen: 40" minimum work aisle between opposing base cabinets
+- Maneuvering clearances: 18" pull side, 0" push side minimum (varies by approach)
+- Hardware: Lever handles or other operable with one hand, no tight grasping
+"""
+    elif "TYPE_A" in ruleset:
+        prompt += """
+- Doors: 32" clear opening minimum
+- Routes: 36" minimum width continuous
+- Bathrooms: 60" turning circle required (T-turn not acceptable)
+- Kitchen: 40" minimum work aisle, accessible sink and cooktop required
+- Enhanced clearances per ANSI A117.1 Type A
+- Grab bar blocking required at all toilet and bathtub/shower locations
+"""
+    elif "TYPE_B" in ruleset:
+        prompt += """
+- Doors: 32" clear opening (31.75" acceptable at bathroom doors)
+- Routes: 36" minimum width
+- Bathrooms: Reinforced grab bar backing required (actual bars not required initially)
+- Kitchen: 40" work aisle if U-shaped layout
+- Per ANSI A117.1 Type B (less stringent than Type A)
+- Usable doors, accessible routes, and reinforcement only
+"""
+    
+    return prompt
 
 SYSTEM_INSTRUCTIONS = """
 You are an expert accessibility plan reviewer for residential unit plans, specializing in FHA and ANSI A117.1 compliance.
@@ -15,6 +137,13 @@ CRITICAL REQUIREMENTS:
 3. Every issue MUST include: severity, location_hint, finding, recommendation, confidence
 4. Be specific about locations (e.g., "Master Bathroom entrance", "Kitchen approach", "Hallway near bedroom 2")
 5. Reference specific FHA or ANSI requirements when applicable
+6. EXTRACT AND REPORT ACTUAL MEASUREMENTS whenever visible on the drawings
+
+MEASUREMENT REPORTING:
+- Look for dimension strings on the drawings (e.g., "3'-0\"", "32\"", "5'6\"")
+- Report measurements in your findings: "Measured: 34\", Required: 36\""
+- Include measurement field with just the extracted value when found
+- If you cannot read a critical dimension, explicitly note this as an issue
 
 COMMON ACCESSIBILITY ISSUES TO CHECK:
 - Door clear opening widths (32" min for FHA, 32" for Type A, varies for Type B)
@@ -29,9 +158,9 @@ COMMON ACCESSIBILITY ISSUES TO CHECK:
 - Hardware types and mounting heights
 
 CONFIDENCE LEVELS:
-- High: Clearly visible measurement or condition that violates code
+- High: Clearly visible measurement or condition that violates code, dimension is labeled
 - Medium: Likely issue based on typical drawing conventions but needs field verification
-- Low: Potential concern or item that should be verified but not clearly shown
+- Low: Potential concern or item that should be verified but not clearly shown on drawing
 
 OUTPUT FORMAT:
 Return STRICT JSON matching this schema:
@@ -39,11 +168,11 @@ Return STRICT JSON matching this schema:
   "project_name": "string",
   "ruleset": "FHA" | "ANSI_A1171_TYPE_A" | "ANSI_A1171_TYPE_B",
   "scale_note": "string",
-  "overall_summary": "Brief overall assessment",
+  "overall_summary": "Brief overall assessment of all pages reviewed",
   "pages": [
     {
       "page_index": 0,
-      "page_label": "Floor Plan",
+      "page_label": "Floor Plan" | "Interior Elevation" | "Door Schedule" | "Reflected Ceiling Plan" | "Other",
       "sheet_number": "A2.1",
       "sheet_title": "Unit Plan",
       "summary": "Brief page summary",
@@ -51,10 +180,11 @@ Return STRICT JSON matching this schema:
         {
           "severity": "High" | "Medium" | "Low",
           "location_hint": "Specific location on drawing",
-          "finding": "What the issue is",
+          "finding": "What the issue is, including measurements if visible",
           "recommendation": "How to fix it",
           "reference": "FHA section or ANSI reference (optional)",
-          "confidence": "High" | "Medium" | "Low"
+          "confidence": "High" | "Medium" | "Low",
+          "measurement": "32\" (if you extracted a measurement)"
         }
       ]
     }
@@ -137,7 +267,7 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
         else:
             page_index = page.get("page_index")
         if page.get("page_label") is None:
-            page_label = page_payloads[idx].get("page_label", "") if idx < len(page_payloads) else ""
+            page_label = page_payloads[idx].get("page_label", "Floor Plan") if idx < len(page_payloads) else "Floor Plan"
         else:
             page_label = page.get("page_label")
         sheet_number = page.get("sheet_number", "")
@@ -164,6 +294,7 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
                     "recommendation": issue.get("recommendation", ""),
                     "reference": issue.get("reference"),
                     "confidence": confidence,
+                    "measurement": issue.get("measurement"),
                 }
             )
         normalized_pages.append(
@@ -184,13 +315,21 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_
     client = OpenAI(api_key=api_key)
 
     content = [
-        {"type": "text", "text": f"Project: {project_name}\nRuleset: {ruleset}\nScale: {scale_note}\n\nPlease review the following architectural plans for accessibility compliance. Provide at least 3 issues per page."}
+        {"type": "text", "text": f"Project: {project_name}\nRuleset: {ruleset}\nScale: {scale_note}\n\nPlease review the following architectural plans for accessibility compliance. Provide at least 3 issues per page and extract measurements when visible."}
     ]
 
     for p in page_payloads:
-        content.append({"type": "text", "text": f"\n\n=== PAGE {p['page_index']} — {p['page_label']} ==="})
+        page_label = p.get('page_label', 'Floor Plan')
+        
+        # Add page-specific analysis guide
+        enhanced_prompt = build_enhanced_prompt(page_label, ruleset)
+        
+        content.append({"type": "text", "text": f"\n\n=== PAGE {p['page_index']} — {page_label} ==="})
+        content.append({"type": "text", "text": enhanced_prompt})
+        
         if p.get("extra_text"):
             content.append({"type": "text", "text": f"Extracted text from this page:\n{p['extra_text'][:4000]}"})
+        
         content.append({
             "type": "image_url",
             "image_url": {"url": _png_to_data_url(p["png_bytes"])}
