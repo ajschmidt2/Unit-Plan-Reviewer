@@ -7,10 +7,11 @@ from src.pdf_utils import (
     extract_page_texts,
     extract_sheet_metadata,
     extract_title_block_texts,
-    detect_page_type,
     ImageQualityChecker,
     ScaleVerifier,
 )
+from src.page_classifier import TAGS, classify_page
+from src.region_extractor import extract_regions
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
 from src.storage import init_db, save_review, get_project_review_history, compare_reviews
@@ -52,11 +53,12 @@ class IssueManager:
         
         # Check if dismissed
         if issue_id in st.session_state.dismissed_issues:
-            with st.expander(f"~~{issue_index}. [Dismissed] {issue['location_hint']}~~"):
-                st.caption("This issue has been dismissed")
-                if st.button("Restore", key=f"restore_{issue_id}"):
-                    st.session_state.dismissed_issues.remove(issue_id)
-                    st.rerun()
+            st.markdown(f"~~{issue_index}. [Dismissed] {issue['location_hint']}~~")
+            st.caption("This issue has been dismissed.")
+            if st.button("Restore", key=f"restore_{issue_id}"):
+                st.session_state.dismissed_issues.remove(issue_id)
+                st.rerun()
+            st.divider()
             return
         
         # Display issue with controls
@@ -96,30 +98,36 @@ class IssueManager:
         
         st.caption(f"*Confidence: {issue['confidence']}*")
         
-        # Add notes section
-        with st.expander("📝 Add Notes / Override Severity"):
-            # Severity override
-            new_severity = st.selectbox(
-                "Override Severity",
-                ["Keep Original", "High", "Medium", "Low"],
-                key=f"severity_{issue_id}"
-            )
-            
-            if new_severity != "Keep Original" and new_severity != issue['severity']:
-                if st.button("Apply Severity Change", key=f"apply_sev_{issue_id}"):
-                    st.session_state.issue_severity_overrides[issue_id] = new_severity
-                    st.rerun()
-            
-            # Notes
-            existing_note = st.session_state.issue_notes.get(issue_id, "")
-            note = st.text_area(
-                "Notes",
-                value=existing_note,
-                key=f"note_{issue_id}",
-                placeholder="Add notes about this issue, field verification results, etc."
-            )
-            
-            if note != existing_note:
+        # Add notes section (NO expander — expanders cannot nest)
+        show_controls = st.checkbox(
+            "📝 Add notes / override severity",
+            key=f"show_controls_{issue_id}",
+            value=False,
+        )
+
+        if show_controls:
+            with st.container():
+                st.caption("Overrides & notes")
+
+                new_severity = st.selectbox(
+                    "Override Severity",
+                    ["Keep Original", "High", "Medium", "Low"],
+                    key=f"severity_{issue_id}",
+                )
+
+                if new_severity != "Keep Original" and new_severity != issue["severity"]:
+                    if st.button("Apply Severity Change", key=f"apply_sev_{issue_id}"):
+                        st.session_state.issue_severity_overrides[issue_id] = new_severity
+                        st.rerun()
+
+                existing_note = st.session_state.issue_notes.get(issue_id, "")
+                note = st.text_area(
+                    "Notes",
+                    value=existing_note,
+                    key=f"note_{issue_id}",
+                    placeholder="Add notes about this issue, field verification results, etc.",
+                )
+
                 if st.button("Save Note", key=f"save_note_{issue_id}"):
                     st.session_state.issue_notes[issue_id] = note
                     st.success("Note saved!")
@@ -286,11 +294,9 @@ def display_results(result):
     # Display each page's results with interactive controls
     for page in result.pages:
         with st.expander(f"📄 Page {page.page_index} — {page.page_label}", expanded=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Sheet Number:** {page.sheet_number or 'N/A'}")
-            with col2:
-                st.write(f"**Sheet Title:** {page.sheet_title or 'N/A'}")
+            sheet_id = getattr(page, "sheet_id", None) or getattr(page, "sheet_number", None)
+            sheet_title = page.sheet_title or "N/A"
+            st.write(f"**Sheet:** {sheet_id or 'N/A'} — {sheet_title}")
             
             if page.summary:
                 st.write("**Summary:**")
@@ -330,15 +336,34 @@ def main():
     st.title("Unit Plan Reviewer")
     st.caption(f"Build: {_get_app_version()}")
 
+    if "page_scale_overrides" not in st.session_state:
+        st.session_state.page_scale_overrides = {}
+
     project_name = st.text_input("Project Name")
     ruleset = st.selectbox("Ruleset", ["FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"])
     scale_note = st.text_input("Scale Note", "1/4\" = 1'-0\"")
+
+    auto_tagging = st.checkbox("Auto-detect content tags", value=True)
+    use_region_detection = st.checkbox("Use region detection / crop views", value=True)
 
     uploaded = st.file_uploader("Upload PDF", type=["pdf"])
     if not uploaded:
         st.stop()
 
     pdf_bytes = uploaded.getvalue()
+    current_context = (
+        project_name.strip(),
+        ruleset,
+        scale_note,
+        uploaded.name,
+        auto_tagging,
+        use_region_detection,
+    )
+    if st.session_state.get("review_context") != current_context:
+        st.session_state.review_context = current_context
+        st.session_state.review_result = None
+        st.session_state.review_saved = False
+        st.session_state.report_pdf = None
     
     with st.spinner("Processing PDF..."):
         pages = pdf_to_page_images(pdf_bytes)
@@ -360,10 +385,10 @@ def main():
         with st.expander(f"Page {p.page_index}"):
             st.image(p.png_bytes, use_container_width=True)
             
-            # Auto-detect page type
             title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
             page_text = page_texts.get(p.page_index, "")
-            detected_type = detect_page_type(page_text, title_block)
+            auto_tags = classify_page(page_text) if auto_tagging else {"tags": []}
+            auto_tag_list = [entry["tag"] for entry in auto_tags["tags"]] or ["Floor Plan"]
             
             col1, col2 = st.columns(2)
             
@@ -376,13 +401,67 @@ def main():
                 )
             
             with col2:
-                page_type = st.selectbox(
-                    "Page Type",
-                    ["Floor Plan", "Interior Elevation", "Door Schedule", "Reflected Ceiling Plan", "Other"],
-                    index=["Floor Plan", "Interior Elevation", "Door Schedule", "Reflected Ceiling Plan", "Other"].index(detected_type),
-                    key=f"page_type_{p.page_index}",
-                    disabled=not (include_all or include_page)
+                selected_tags = st.multiselect(
+                    "Tags",
+                    TAGS,
+                    default=auto_tag_list,
+                    key=f"tags_{p.page_index}",
+                    disabled=not (include_all or include_page),
                 )
+
+            if auto_tags["tags"]:
+                tag_lines = [
+                    f"- {entry['tag']} ({entry['confidence']})"
+                    for entry in auto_tags["tags"]
+                ]
+                st.markdown("**Auto tags:**\n" + "\n".join(tag_lines))
+
+            scale_options = [
+                scale_note,
+                "1/8\" = 1'-0\"",
+                "3/16\" = 1'-0\"",
+                "1/4\" = 1'-0\"",
+                "3/8\" = 1'-0\"",
+                "1/2\" = 1'-0\"",
+            ]
+            scale_options = list(dict.fromkeys(scale_options))
+            different_scales = st.checkbox(
+                "Different scales on this sheet",
+                key=f"diff_scales_{p.page_index}",
+                disabled=not (include_all or include_page),
+            )
+
+            if different_scales:
+                plan_scale = st.selectbox(
+                    "Plan scale",
+                    scale_options,
+                    key=f"plan_scale_{p.page_index}",
+                )
+                elevation_scale = st.selectbox(
+                    "Elevation scale",
+                    scale_options,
+                    key=f"elev_scale_{p.page_index}",
+                )
+                rcp_scale = st.selectbox(
+                    "RCP scale",
+                    scale_options,
+                    key=f"rcp_scale_{p.page_index}",
+                )
+                detail_scale = st.selectbox(
+                    "Detail scale",
+                    scale_options,
+                    key=f"detail_scale_{p.page_index}",
+                )
+                st.session_state.page_scale_overrides[p.page_index] = {
+                    "Floor Plan": plan_scale,
+                    "Interior Elevations": elevation_scale,
+                    "RCP / Ceiling": rcp_scale,
+                    "Details / Sections": detail_scale,
+                    "Door Schedule": detail_scale,
+                    "Notes / Code": detail_scale,
+                }
+            else:
+                st.session_state.page_scale_overrides.pop(p.page_index, None)
             
             if include_all or include_page:
                 sheet_number, sheet_title = extract_sheet_metadata(
@@ -391,20 +470,104 @@ def main():
                 
                 # Show extracted metadata for debugging
                 st.caption(f"Detected: Sheet {sheet_number or 'N/A'} - {sheet_title or 'N/A'}")
-                
-                selected.append({
-                    "page_index": p.page_index,
-                    "page_label": page_type,
-                    "png_bytes": p.png_bytes,
-                    "sheet_number_hint": sheet_number,
-                    "sheet_title_hint": sheet_title,
-                    "extra_text": (
-                        f"Page text:\n{page_text}\n\n"
-                        f"Title block text (right side):\n{title_block}"
-                    )
-                })
 
-    st.write(f"**Selected pages:** {[p['page_index'] for p in selected]}")
+                tag_fallback = auto_tag_list
+                resolved_tags = selected_tags or tag_fallback
+                primary_tag = resolved_tags[0] if resolved_tags else "Floor Plan"
+                page_label = (
+                    f"Combo: {', '.join(resolved_tags[:3])}"
+                    if len(resolved_tags) > 1
+                    else primary_tag
+                )
+                scale_overrides = st.session_state.page_scale_overrides.get(p.page_index, {})
+                extra_text = (
+                    f"Page text:\n{page_text}\n\n"
+                    f"Title block text (right side):\n{title_block}"
+                )
+
+                if use_region_detection:
+                    regions = extract_regions(
+                        pdf_bytes,
+                        p.page_index,
+                        dpi=200,
+                        selected_tags=resolved_tags,
+                    )
+                    st.markdown("**Detected regions:**")
+                    for region in regions:
+                        st.image(
+                            region["png_bytes"],
+                            caption=f"{region['tag']} ({region['confidence']})",
+                            use_container_width=True,
+                        )
+                        selected.append(
+                            {
+                                "page_index": p.page_index,
+                                "page_label": page_label,
+                                "tag": region["tag"],
+                                "region_bbox": region["bbox"],
+                                "anchor_text": region["anchor_text"],
+                                "scale_note": scale_overrides.get(region["tag"], scale_note),
+                                "png_bytes": region["png_bytes"],
+                                "sheet_id_hint": sheet_number,
+                                "sheet_title_hint": sheet_title,
+                                "extra_text": extra_text,
+                            }
+                        )
+                else:
+                    selected.append(
+                        {
+                            "page_index": p.page_index,
+                            "page_label": page_label,
+                            "tag": ", ".join(resolved_tags),
+                            "scale_note": scale_note,
+                            "png_bytes": p.png_bytes,
+                            "sheet_id_hint": sheet_number,
+                            "sheet_title_hint": sheet_title,
+                            "extra_text": extra_text,
+                        }
+                    )
+
+    selected_page_indices = sorted({p["page_index"] for p in selected})
+    st.write(f"**Selected pages:** {selected_page_indices}")
+
+    def render_review_output(review_result):
+        # Display results on screen
+        display_results(review_result)
+
+        # Check for previous reviews
+        history = get_project_review_history(project_name.strip(), limit=2)
+        if len(history) >= 2:
+            st.info("📂 Previous review found for this project")
+
+            if st.checkbox("Compare with previous review"):
+                old_review = history[1]["result"]
+                new_review = review_result.model_dump()
+
+                comparison = compare_reviews(old_review, new_review)
+                display_comparison(comparison)
+
+        # Save to database once per run
+        if not st.session_state.review_saved:
+            save_review(project_name.strip(), ruleset, scale_note, review_result.model_dump_json())
+            st.session_state.review_saved = True
+            st.success("💾 Review saved to database")
+
+        # Generate and offer PDF download
+        if st.session_state.report_pdf is None:
+            with st.spinner("Generating PDF report..."):
+                st.session_state.report_pdf = build_pdf_report(
+                    review_result,
+                    issue_notes=st.session_state.issue_notes,
+                    severity_overrides=st.session_state.issue_severity_overrides,
+                    dismissed_issues=st.session_state.dismissed_issues,
+                )
+
+        st.download_button(
+            "📥 Download PDF Report",
+            st.session_state.report_pdf,
+            file_name=f"{project_name.replace(' ', '_')}_review.pdf",
+            mime="application/pdf"
+        )
 
     if st.button("Run Review", type="primary"):
         if not project_name.strip():
@@ -440,40 +603,17 @@ def main():
             with st.expander("🔧 Debug: Raw Result Data"):
                 st.json(result.model_dump())
             
-            # Display results on screen
-            display_results(result)
-            
-            # Check for previous reviews
-            history = get_project_review_history(project_name.strip(), limit=2)
-            if len(history) >= 2:
-                st.info("📂 Previous review found for this project")
-                
-                if st.checkbox("Compare with previous review"):
-                    old_review = history[1]["result"]
-                    new_review = result.model_dump()
-                    
-                    comparison = compare_reviews(old_review, new_review)
-                    display_comparison(comparison)
-            
-            # Save to database
-            save_review(project_name.strip(), ruleset, scale_note, result.model_dump_json())
-            st.success("💾 Review saved to database")
-            
-            # Generate and offer PDF download
-            with st.spinner("Generating PDF report..."):
-                pdf = build_pdf_report(result)
-            
-            st.download_button(
-                "📥 Download PDF Report", 
-                pdf, 
-                file_name=f"{project_name.replace(' ', '_')}_review.pdf",
-                mime="application/pdf"
-            )
+            st.session_state.review_result = result
+            st.session_state.review_saved = False
+            st.session_state.report_pdf = None
+            render_review_output(result)
             
         except Exception as e:
             st.error("❌ Error during review:")
             st.exception(e)
             st.stop()
+    elif st.session_state.get("review_result") is not None:
+        render_review_output(st.session_state.review_result)
 
 if __name__ == "__main__":
     main()

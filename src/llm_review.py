@@ -64,10 +64,22 @@ PAGE_TYPE_ANALYSIS = {
     }
 }
 
+TAG_TO_PAGE_TYPE = {
+    "Interior Elevations": "Interior Elevation",
+    "RCP / Ceiling": "Reflected Ceiling Plan",
+    "Notes / Code": "Other",
+    "Details / Sections": "Other",
+}
+
+def _normalize_tag(tag: str) -> str:
+    if tag in TAG_TO_PAGE_TYPE:
+        return TAG_TO_PAGE_TYPE[tag]
+    return tag
+
 def build_enhanced_prompt(page_label: str, ruleset: str) -> str:
     """Build a targeted prompt based on page type and ruleset"""
-    
-    analysis_guide = PAGE_TYPE_ANALYSIS.get(page_label, PAGE_TYPE_ANALYSIS["Other"])
+    normalized = _normalize_tag(page_label)
+    analysis_guide = PAGE_TYPE_ANALYSIS.get(normalized, PAGE_TYPE_ANALYSIS["Other"])
     
     prompt = f"""
 For this {page_label}, focus your accessibility review on these specific areas:
@@ -138,6 +150,7 @@ CRITICAL REQUIREMENTS:
 4. Be specific about locations (e.g., "Master Bathroom entrance", "Kitchen approach", "Hallway near bedroom 2")
 5. Reference specific FHA or ANSI requirements when applicable
 6. EXTRACT AND REPORT ACTUAL MEASUREMENTS whenever visible on the drawings
+7. Each issue location_hint MUST include "Page {page_index} / {region tag}" and anchor text if provided
 
 MEASUREMENT REPORTING:
 - Look for dimension strings on the drawings (e.g., "3'-0\"", "32\"", "5'6\"")
@@ -172,8 +185,8 @@ Return STRICT JSON matching this schema:
   "pages": [
     {
       "page_index": 0,
-      "page_label": "Floor Plan" | "Interior Elevation" | "Door Schedule" | "Reflected Ceiling Plan" | "Other",
-      "sheet_number": "A2.1",
+      "page_label": "Combo Sheet" | "Floor Plan" | "Interior Elevation" | "Door Schedule" | "Reflected Ceiling Plan" | "Other",
+      "sheet_id": "A2.1",
       "sheet_title": "Unit Plan",
       "summary": "Brief page summary",
       "issues": [
@@ -259,23 +272,42 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
     if not isinstance(pages, list):
         pages = []
     normalized_pages = []
+    page_hints = {}
+    for payload_item in page_payloads:
+        if not isinstance(payload_item, dict):
+            continue
+        hint_index = payload_item.get("page_index")
+        if hint_index is None or hint_index in page_hints:
+            continue
+        page_hints[hint_index] = {
+            "page_label": payload_item.get("page_label", "Combo Sheet"),
+            "sheet_id": payload_item.get("sheet_id_hint") or payload_item.get("sheet_number_hint", ""),
+            "sheet_title": payload_item.get("sheet_title_hint", ""),
+        }
     for idx, page in enumerate(pages):
         if not isinstance(page, dict):
             continue
+        payload_fallback = page_payloads[idx] if idx < len(page_payloads) else {}
         if page.get("page_index") is None:
-            page_index = page_payloads[idx].get("page_index", idx) if idx < len(page_payloads) else idx
+            page_index = payload_fallback.get("page_index", idx)
         else:
             page_index = page.get("page_index")
+        hint = page_hints.get(page_index, {})
         if page.get("page_label") is None:
-            page_label = page_payloads[idx].get("page_label", "Floor Plan") if idx < len(page_payloads) else "Floor Plan"
+            payload_label = payload_fallback.get("page_label", "Combo Sheet")
+            page_label = hint.get("page_label") or payload_label
         else:
             page_label = page.get("page_label")
-        sheet_number = page.get("sheet_number", "")
+        sheet_id = page.get("sheet_id") or page.get("sheet_number", "")
         sheet_title = page.get("sheet_title", "")
-        if not sheet_number and idx < len(page_payloads):
-            sheet_number = page_payloads[idx].get("sheet_number_hint", "")
-        if not sheet_title and idx < len(page_payloads):
-            sheet_title = page_payloads[idx].get("sheet_title_hint", "")
+        if not sheet_id:
+            sheet_id = (
+                hint.get("sheet_id")
+                or payload_fallback.get("sheet_id_hint", "")
+                or payload_fallback.get("sheet_number_hint", "")
+            )
+        if not sheet_title:
+            sheet_title = hint.get("sheet_title") or payload_fallback.get("sheet_title_hint", "")
         summary = page.get("summary", "")
         issues = page.get("issues", [])
         if not isinstance(issues, list):
@@ -301,7 +333,7 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
             {
                 "page_index": page_index,
                 "page_label": page_label,
-                "sheet_number": sheet_number,
+                "sheet_id": sheet_id,
                 "sheet_title": sheet_title,
                 "summary": summary,
                 "issues": normalized_issues,
@@ -319,21 +351,27 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_
     ]
 
     for p in page_payloads:
-        page_label = p.get('page_label', 'Floor Plan')
-        
-        # Add page-specific analysis guide
-        enhanced_prompt = build_enhanced_prompt(page_label, ruleset)
-        
+        page_label = p.get("page_label", "Combo Sheet")
+        region_tag = p.get("tag", page_label)
+        tag_label = _normalize_tag(region_tag)
+        enhanced_prompt = build_enhanced_prompt(tag_label, ruleset)
+
         content.append({"type": "text", "text": f"\n\n=== PAGE {p['page_index']} — {page_label} ==="})
+        content.append({"type": "text", "text": f"REGION TAG: {region_tag}"})
+        content.append({"type": "text", "text": f"Scale note for this region: {p.get('scale_note', scale_note)}"})
+        if p.get("anchor_text"):
+            content.append({"type": "text", "text": f"Anchor: {p['anchor_text']}"})
         content.append({"type": "text", "text": enhanced_prompt})
-        
+
         if p.get("extra_text"):
             content.append({"type": "text", "text": f"Extracted text from this page:\n{p['extra_text'][:4000]}"})
-        
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": _png_to_data_url(p["png_bytes"])}
-        })
+
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": _png_to_data_url(p["png_bytes"])},
+            }
+        )
 
     # Use chat completions (standard approach for gpt-4o-mini)
     resp = client.chat.completions.create(
