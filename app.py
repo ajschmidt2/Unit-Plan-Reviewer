@@ -329,6 +329,31 @@ def _get_app_version() -> str:
     except (subprocess.SubprocessError, FileNotFoundError):
         return "unknown"
 
+def _get_app_version() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            text=True
+        ).strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return "unknown"
+
+def detect_page_type(page_text: str, title_block: str) -> str:
+    combined = f"{page_text}\n{title_block}".upper()
+    keywords = {
+        "SITE PLAN": "Site Plan",
+        "FLOOR PLAN": "Floor Plan",
+        "UNIT PLAN": "Unit Plan",
+        "ENLARGED": "Enlarged Plan",
+        "ELEVATION": "Elevation",
+        "SECTION": "Section",
+        "DETAIL": "Detail",
+    }
+    for key, label in keywords.items():
+        if key in combined:
+            return label
+    return "Floor Plan"
+
 def main():
     require_login()
     init_db()
@@ -381,17 +406,19 @@ def main():
             
             if include_all or include_page:
                 title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
+                page_text = page_texts.get(p.page_index, "")
+                detected_type = detect_page_type(page_text, title_block)
                 sheet_number, sheet_title = extract_sheet_metadata(
-                    title_block or page_texts.get(p.page_index, "")
+                    title_block or page_text
                 )
                 selected.append({
                     "page_index": p.page_index,
-                    "page_label": "Floor Plan",
+                    "page_label": detected_type,
                     "png_bytes": p.png_bytes,
                     "sheet_number_hint": sheet_number,
                     "sheet_title_hint": sheet_title,
                     "extra_text": (
-                        f"Page text:\n{page_texts.get(p.page_index, '')}\n\n"
+                        f"Page text:\n{page_text}\n\n"
                         f"Title block text (right side):\n{title_block}"
                     )
                 })
@@ -401,6 +428,30 @@ def main():
     if st.button("Run Review"):
         if not project_name.strip():
             st.error("Enter a Project Name first.")
+            st.stop()
+
+        if not selected:
+            st.warning("Select at least one page (check Include) before running the review.")
+            st.stop()
+
+        api_key = st.secrets.get("OPENAI_API_KEY", "")
+        if not api_key:
+            st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+            st.stop()
+
+        model_name = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+
+        try:
+            result = run_review(
+                api_key=api_key,
+                project_name=project_name.strip(),
+                ruleset=ruleset,
+                scale_note=scale_note,
+                page_payloads=selected,
+                model_name=model_name
+            )
+        except Exception as e:
+            st.exception(e)
             st.stop()
 
         if not selected:
