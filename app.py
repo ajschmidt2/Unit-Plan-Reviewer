@@ -52,11 +52,12 @@ class IssueManager:
         
         # Check if dismissed
         if issue_id in st.session_state.dismissed_issues:
-            with st.expander(f"~~{issue_index}. [Dismissed] {issue['location_hint']}~~"):
-                st.caption("This issue has been dismissed")
-                if st.button("Restore", key=f"restore_{issue_id}"):
-                    st.session_state.dismissed_issues.remove(issue_id)
-                    st.rerun()
+            st.markdown(f"~~{issue_index}. [Dismissed] {issue['location_hint']}~~")
+            st.caption("This issue has been dismissed.")
+            if st.button("Restore", key=f"restore_{issue_id}"):
+                st.session_state.dismissed_issues.remove(issue_id)
+                st.rerun()
+            st.divider()
             return
         
         # Display issue with controls
@@ -96,30 +97,36 @@ class IssueManager:
         
         st.caption(f"*Confidence: {issue['confidence']}*")
         
-        # Add notes section
-        with st.expander("📝 Add Notes / Override Severity"):
-            # Severity override
-            new_severity = st.selectbox(
-                "Override Severity",
-                ["Keep Original", "High", "Medium", "Low"],
-                key=f"severity_{issue_id}"
-            )
-            
-            if new_severity != "Keep Original" and new_severity != issue['severity']:
-                if st.button("Apply Severity Change", key=f"apply_sev_{issue_id}"):
-                    st.session_state.issue_severity_overrides[issue_id] = new_severity
-                    st.rerun()
-            
-            # Notes
-            existing_note = st.session_state.issue_notes.get(issue_id, "")
-            note = st.text_area(
-                "Notes",
-                value=existing_note,
-                key=f"note_{issue_id}",
-                placeholder="Add notes about this issue, field verification results, etc."
-            )
-            
-            if note != existing_note:
+        # Add notes section (NO expander — expanders cannot nest)
+        show_controls = st.checkbox(
+            "📝 Add notes / override severity",
+            key=f"show_controls_{issue_id}",
+            value=False,
+        )
+
+        if show_controls:
+            with st.container():
+                st.caption("Overrides & notes")
+
+                new_severity = st.selectbox(
+                    "Override Severity",
+                    ["Keep Original", "High", "Medium", "Low"],
+                    key=f"severity_{issue_id}",
+                )
+
+                if new_severity != "Keep Original" and new_severity != issue["severity"]:
+                    if st.button("Apply Severity Change", key=f"apply_sev_{issue_id}"):
+                        st.session_state.issue_severity_overrides[issue_id] = new_severity
+                        st.rerun()
+
+                existing_note = st.session_state.issue_notes.get(issue_id, "")
+                note = st.text_area(
+                    "Notes",
+                    value=existing_note,
+                    key=f"note_{issue_id}",
+                    placeholder="Add notes about this issue, field verification results, etc.",
+                )
+
                 if st.button("Save Note", key=f"save_note_{issue_id}"):
                     st.session_state.issue_notes[issue_id] = note
                     st.success("Note saved!")
@@ -339,6 +346,12 @@ def main():
         st.stop()
 
     pdf_bytes = uploaded.getvalue()
+    current_context = (project_name.strip(), ruleset, scale_note, uploaded.name)
+    if st.session_state.get("review_context") != current_context:
+        st.session_state.review_context = current_context
+        st.session_state.review_result = None
+        st.session_state.review_saved = False
+        st.session_state.report_pdf = None
     
     with st.spinner("Processing PDF..."):
         pages = pdf_to_page_images(pdf_bytes)
@@ -406,6 +419,40 @@ def main():
 
     st.write(f"**Selected pages:** {[p['page_index'] for p in selected]}")
 
+    def render_review_output(review_result):
+        # Display results on screen
+        display_results(review_result)
+
+        # Check for previous reviews
+        history = get_project_review_history(project_name.strip(), limit=2)
+        if len(history) >= 2:
+            st.info("📂 Previous review found for this project")
+
+            if st.checkbox("Compare with previous review"):
+                old_review = history[1]["result"]
+                new_review = review_result.model_dump()
+
+                comparison = compare_reviews(old_review, new_review)
+                display_comparison(comparison)
+
+        # Save to database once per run
+        if not st.session_state.review_saved:
+            save_review(project_name.strip(), ruleset, scale_note, review_result.model_dump_json())
+            st.session_state.review_saved = True
+            st.success("💾 Review saved to database")
+
+        # Generate and offer PDF download
+        if st.session_state.report_pdf is None:
+            with st.spinner("Generating PDF report..."):
+                st.session_state.report_pdf = build_pdf_report(review_result)
+
+        st.download_button(
+            "📥 Download PDF Report",
+            st.session_state.report_pdf,
+            file_name=f"{project_name.replace(' ', '_')}_review.pdf",
+            mime="application/pdf"
+        )
+
     if st.button("Run Review", type="primary"):
         if not project_name.strip():
             st.error("Enter a Project Name first.")
@@ -440,40 +487,17 @@ def main():
             with st.expander("🔧 Debug: Raw Result Data"):
                 st.json(result.model_dump())
             
-            # Display results on screen
-            display_results(result)
-            
-            # Check for previous reviews
-            history = get_project_review_history(project_name.strip(), limit=2)
-            if len(history) >= 2:
-                st.info("📂 Previous review found for this project")
-                
-                if st.checkbox("Compare with previous review"):
-                    old_review = history[1]["result"]
-                    new_review = result.model_dump()
-                    
-                    comparison = compare_reviews(old_review, new_review)
-                    display_comparison(comparison)
-            
-            # Save to database
-            save_review(project_name.strip(), ruleset, scale_note, result.model_dump_json())
-            st.success("💾 Review saved to database")
-            
-            # Generate and offer PDF download
-            with st.spinner("Generating PDF report..."):
-                pdf = build_pdf_report(result)
-            
-            st.download_button(
-                "📥 Download PDF Report", 
-                pdf, 
-                file_name=f"{project_name.replace(' ', '_')}_review.pdf",
-                mime="application/pdf"
-            )
+            st.session_state.review_result = result
+            st.session_state.review_saved = False
+            st.session_state.report_pdf = None
+            render_review_output(result)
             
         except Exception as e:
             st.error("❌ Error during review:")
             st.exception(e)
             st.stop()
+    elif st.session_state.get("review_result") is not None:
+        render_review_output(st.session_state.review_result)
 
 if __name__ == "__main__":
     main()
