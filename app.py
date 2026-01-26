@@ -555,11 +555,7 @@ def main():
         # Generate and offer PDF download
         if st.session_state.report_pdf is None:
             with st.spinner("Generating PDF report..."):
-                st.session_state.report_pdf = build_pdf_report(
-                    review_result,
-                    issue_notes=st.session_state.issue_notes,
-                    severity_overrides=st.session_state.issue_severity_overrides,
-                )
+                st.session_state.report_pdf = build_pdf_report(review_result)
 
         st.download_button(
             "📥 Download PDF Report",
