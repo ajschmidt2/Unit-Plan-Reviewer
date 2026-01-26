@@ -22,10 +22,17 @@ def main():
     pages = pdf_to_page_images(uploaded.getvalue())
     selected = []
 
+    include_all = st.checkbox("Include all pages")
+
     for p in pages:
         with st.expander(f"Page {p.page_index}"):
             st.image(p.png_bytes, use_container_width=True)
-            if st.checkbox("Include", key=p.page_index):
+            include_page = st.checkbox(
+                "Include",
+                key=f"include_page_{p.page_index}",
+                disabled=include_all
+            )
+            if include_all or include_page:
                 selected.append({
                     "page_index": p.page_index,
                     "page_label": "Floor Plan",
