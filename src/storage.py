@@ -43,16 +43,25 @@ def get_project_review_history(project_name: str, limit: int = 10) -> List[Dict]
         )
         rows = cursor.fetchall()
         
-        return [
-            {
-                "id": row[0],
-                "created_at": row[1],
-                "ruleset": row[2],
-                "scale_note": row[3],
-                "result": json.loads(row[4])
-            }
-            for row in rows
-        ]
+        history = []
+        for row in rows:
+            payload = json.loads(row[4])
+            if isinstance(payload, dict) and "review" in payload:
+                review_payload = payload.get("review", {})
+                annotations = payload.get("annotations", {}) or {}
+            else:
+                review_payload = payload
+                annotations = {}
+            history.append(
+                {
+                    "id": row[0],
+                    "created_at": row[1],
+                    "ruleset": row[2],
+                    "scale_note": row[3],
+                    "result": {"review": review_payload, "annotations": annotations},
+                }
+            )
+        return history
 
 def compare_reviews(old_review: Dict, new_review: Dict) -> Dict:
     """Compare two reviews and identify changes"""

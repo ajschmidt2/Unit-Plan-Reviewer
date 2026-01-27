@@ -88,8 +88,8 @@ def build_pdf_report(result, annotations=None):
     notes = annotations.get("notes", {}) or {}
     severity_overrides = annotations.get("severity_overrides", {}) or {}
 
-    def issue_id(page_index: int, issue_index: int) -> str:
-        return f"p{page_index}_i{issue_index}"
+    def issue_id(page_index: int, issue_index_1based: int) -> str:
+        return f"p{page_index}_i{issue_index_1based}"
     
     # Define margins
     left_margin = inch
@@ -121,9 +121,9 @@ def build_pdf_report(result, annotations=None):
     y -= 0.3 * inch
     
     total_issues = 0
-    for p in result.pages:
-        for idx, _ in enumerate(p.issues):
-            if issue_id(p.page_index, idx) not in dismissed:
+    for page in result.pages:
+        for idx, _ in enumerate(page.issues, 1):
+            if issue_id(page.page_index, idx) not in dismissed:
                 total_issues += 1
     c.drawString(left_margin + 0.5*inch, y, f"Total Issues Found: {total_issues}")
     y -= 1 * inch
@@ -192,7 +192,7 @@ def build_pdf_report(result, annotations=None):
             c.drawString(left_margin, y, "✓ No issues reported for this page.")
             y -= 0.4 * inch
         else:
-            for idx, issue in enumerate(page.issues):
+            for idx, issue in enumerate(page.issues, 1):
                 # Check if we need a new page before each issue
                 if y < 2.5 * inch:
                     c.showPage()
@@ -203,7 +203,7 @@ def build_pdf_report(result, annotations=None):
                 if iid in dismissed:
                     continue
                 effective_severity = severity_overrides.get(iid, issue.severity)
-                issue_note = notes.get(iid, "").strip()
+                issue_note = (notes.get(iid) or "").strip()
                 c.setFont("Helvetica-Bold", 10)
                 c.setFillColorRGB(*_severity_color(effective_severity))
                 severity_symbol = {"High": "●", "Medium": "◐", "Low": "○"}
