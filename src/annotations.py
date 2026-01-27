@@ -7,7 +7,7 @@ from src.schemas import ReviewResult
 def assign_issue_ids(result: ReviewResult) -> ReviewResult:
     updated = result.model_copy(deep=True)
     for page in updated.pages:
-        for idx, issue in enumerate(page.issues):
+        for idx, issue in enumerate(page.issues, 1):
             issue_id = getattr(issue, "issue_id", None)
             if not issue_id:
                 new_id = f"p{page.page_index}_i{idx}"
@@ -31,7 +31,7 @@ def apply_annotations(review: Union[ReviewResult, Dict[str, Any]], annotations: 
 
     for page in result.pages:
         new_issues = []
-        for idx, issue in enumerate(page.issues):
+        for idx, issue in enumerate(page.issues, 1):
             iid = getattr(issue, "issue_id", None) or f"p{page.page_index}_i{idx}"
             if isinstance(issue, dict):
                 issue["issue_id"] = iid

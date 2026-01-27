@@ -339,13 +339,21 @@ def display_results(result, base_review):
             file_name="annotated_review.json",
             mime="application/json"
         )
-    
     with col2:
-        if st.button("🔄 Reset All Annotations"):
-            st.session_state.dismissed_issues = set()
-            st.session_state.issue_notes = {}
-            st.session_state.issue_severity_overrides = {}
-            st.rerun()
+        annotations = build_annotations()
+        pdf_bytes = build_pdf_report(base_review, annotations=annotations)
+        st.download_button(
+            "📄 Download PDF Report",
+            data=pdf_bytes,
+            file_name="accessibility_review_report.pdf",
+            mime="application/pdf",
+        )
+
+    if st.button("🔄 Reset All Annotations"):
+        st.session_state.dismissed_issues = set()
+        st.session_state.issue_notes = {}
+        st.session_state.issue_severity_overrides = {}
+        st.rerun()
 
 def main():
     require_login()
@@ -579,16 +587,7 @@ def main():
             st.session_state.review_saved = True
             st.success("💾 Review saved to database")
 
-        # Generate and offer PDF download
-        with st.spinner("Generating PDF report..."):
-            pdf_bytes = build_pdf_report(annotated_result)
-
-        st.download_button(
-            "📥 Download PDF Report",
-            pdf_bytes,
-            file_name=f"{project_name.replace(' ', '_')}_review.pdf",
-            mime="application/pdf"
-        )
+        # PDF download handled in display_results to ensure latest annotations are used.
 
     if st.button("Run Review", type="primary"):
         if not project_name.strip():

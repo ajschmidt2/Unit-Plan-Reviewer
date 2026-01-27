@@ -2,7 +2,7 @@ import unittest
 
 import fitz
 
-from src.annotations import apply_annotations, assign_issue_ids
+from src.annotations import assign_issue_ids
 from src.report_pdf import build_pdf_report
 from src.schemas import Issue, PageReview, ReviewResult
 
@@ -39,8 +39,7 @@ class TestPdfAnnotations(unittest.TestCase):
             "severity_overrides": {issue_id: "High"},
         }
 
-        annotated = apply_annotations(review, annotations)
-        pdf_bytes = build_pdf_report(annotated)
+        pdf_bytes = build_pdf_report(review, annotations=annotations)
 
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         text = "".join(page.get_text() for page in doc)
