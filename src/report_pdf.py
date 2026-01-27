@@ -79,17 +79,10 @@ def _severity_color(severity: str) -> tuple:
     return colors.get(severity, (0, 0, 0))
 
 
-def build_pdf_report(result, annotations=None):
+def build_pdf_report(result):
     buf = BytesIO()
     c = FooterCanvas(buf, pagesize=letter)
     w, h = letter
-    annotations = annotations or {}
-    dismissed = set(annotations.get("dismissed_issues", []))
-    notes = annotations.get("notes", {}) or {}
-    severity_overrides = annotations.get("severity_overrides", {}) or {}
-
-    def issue_id(page_index: int, issue_index: int) -> str:
-        return f"p{page_index}_i{issue_index}"
     
     # Define margins
     left_margin = inch
@@ -120,11 +113,7 @@ def build_pdf_report(result, annotations=None):
     c.drawString(left_margin + 0.5*inch, y, f"Pages Reviewed: {len(result.pages)}")
     y -= 0.3 * inch
     
-    total_issues = 0
-    for p in result.pages:
-        for idx, _ in enumerate(p.issues):
-            if issue_id(p.page_index, idx) not in dismissed:
-                total_issues += 1
+    total_issues = sum(len(p.issues) for p in result.pages)
     c.drawString(left_margin + 0.5*inch, y, f"Total Issues Found: {total_issues}")
     y -= 1 * inch
     
@@ -192,18 +181,15 @@ def build_pdf_report(result, annotations=None):
             c.drawString(left_margin, y, "✓ No issues reported for this page.")
             y -= 0.4 * inch
         else:
-            for idx, issue in enumerate(page.issues):
+            for issue in page.issues:
                 # Check if we need a new page before each issue
                 if y < 2.5 * inch:
                     c.showPage()
                     y = h - inch
                 
                 # Issue number and severity badge
-                iid = issue_id(page.page_index, idx)
-                if iid in dismissed:
-                    continue
-                effective_severity = severity_overrides.get(iid, issue.severity)
-                issue_note = notes.get(iid, "").strip()
+                effective_severity = issue.severity
+                issue_note = getattr(issue, "reviewer_note", "") or ""
                 c.setFont("Helvetica-Bold", 10)
                 c.setFillColorRGB(*_severity_color(effective_severity))
                 severity_symbol = {"High": "●", "Medium": "◐", "Low": "○"}
