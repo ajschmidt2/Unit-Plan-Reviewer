@@ -114,14 +114,14 @@ def build_pdf_report(result):
     y -= 0.5 * inch
     
     c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(w / 2, y, result.project_name)
+    c.drawCentredString(w / 2, y, safe_str(result.project_name))
     y -= 1 * inch
     
     # Metadata box
     c.setFont("Helvetica", 11)
-    c.drawString(left_margin + 0.5*inch, y, f"Ruleset: {result.ruleset}")
+    c.drawString(left_margin + 0.5*inch, y, f"Ruleset: {safe_str(result.ruleset)}")
     y -= 0.3 * inch
-    c.drawString(left_margin + 0.5*inch, y, f"Scale: {result.scale_note}")
+    c.drawString(left_margin + 0.5*inch, y, f"Scale: {safe_str(result.scale_note)}")
     y -= 0.3 * inch
     c.drawString(left_margin + 0.5*inch, y, f"Date: {datetime.now().strftime('%B %d, %Y')}")
     y -= 0.3 * inch
@@ -173,7 +173,7 @@ def build_pdf_report(result):
         c.setFillColorRGB(0, 0, 0)
         
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(left_margin, y - 0.25*inch, f"Page {page.page_index} — {page.page_label}")
+        c.drawString(left_margin, y - 0.25*inch, f"Page {page.page_index} — {safe_str(page.page_label)}")
         y -= 0.5 * inch
         
         # Sheet info
@@ -225,7 +225,7 @@ def build_pdf_report(result):
                 
                 # Confidence indicator
                 c.setFont("Helvetica-Oblique", 8)
-                c.drawString(left_margin + 0.2*inch, y, f"Confidence: {issue.confidence}")
+                c.drawString(left_margin + 0.2*inch, y, f"Confidence: {safe_str(issue.confidence)}")
                 y -= 0.2 * inch
                 
                 # Finding with wrapping
