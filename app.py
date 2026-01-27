@@ -14,7 +14,9 @@ from src.page_classifier import TAGS, classify_page
 from src.region_extractor import extract_regions
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
+from src.annotations import apply_annotations, assign_issue_ids
 from src.storage import init_db, save_review, get_project_review_history, compare_reviews
+from src.schemas import ReviewResult
 from src.quality_analysis import ReviewQualityAnalyzer
 
 def _get_app_version() -> str:
@@ -40,16 +42,11 @@ class IssueManager:
             st.session_state.issue_severity_overrides = {}
     
     @staticmethod
-    def create_issue_id(page_index: int, issue_index: int) -> str:
-        """Create unique ID for an issue"""
-        return f"p{page_index}_i{issue_index}"
-    
-    @staticmethod
     def display_interactive_issue(page_index: int, issue_index: int, issue: dict):
         """Display an issue with interactive controls"""
         IssueManager.initialize_session_state()
         
-        issue_id = IssueManager.create_issue_id(page_index, issue_index)
+        issue_id = issue.get("issue_id") or f"p{page_index}_i{issue_index - 1}"
         
         # Check if dismissed
         if issue_id in st.session_state.dismissed_issues:
@@ -135,7 +132,7 @@ class IssueManager:
         st.divider()
     
     @staticmethod
-    def export_with_annotations(result, filename: str = "annotated_review.json"):
+    def export_with_annotations(result):
         """Export review with user annotations"""
         IssueManager.initialize_session_state()
         
@@ -196,6 +193,27 @@ def display_quality_metrics(result):
             st.info("**Suggestions for Improvement:**")
             for suggestion in suggestions:
                 st.write(suggestion)
+
+
+def build_annotations() -> dict:
+    IssueManager.initialize_session_state()
+    return {
+        "dismissed_issues": list(st.session_state.get("dismissed_issues", set())),
+        "notes": st.session_state.get("issue_notes", {}),
+        "severity_overrides": st.session_state.get("issue_severity_overrides", {}),
+    }
+
+
+def load_review_package(payload: dict):
+    if isinstance(payload, dict) and "review" in payload:
+        review_payload = payload.get("review", {})
+        annotations = payload.get("annotations", {}) or {}
+    else:
+        review_payload = payload
+        annotations = {}
+    review = assign_issue_ids(ReviewResult.model_validate(review_payload))
+    annotated = apply_annotations(review, annotations)
+    return review, annotations, annotated
 
 def display_image_quality_report(page_images, scale_note):
     """Display image quality report in Streamlit"""
@@ -277,7 +295,7 @@ def display_comparison(comparison: dict):
     else:
         st.info("Issue count unchanged")
 
-def display_results(result):
+def display_results(result, base_review):
     """Display results with interactive issue management"""
     st.success("✅ Review Complete!")
     
@@ -314,7 +332,7 @@ def display_results(result):
     # Export with annotations
     col1, col2 = st.columns(2)
     with col1:
-        annotated_json = IssueManager.export_with_annotations(result)
+        annotated_json = IssueManager.export_with_annotations(base_review)
         st.download_button(
             "📥 Download Annotated Review (JSON)",
             annotated_json,
@@ -531,8 +549,10 @@ def main():
     st.write(f"**Selected pages:** {selected_page_indices}")
 
     def render_review_output(review_result):
+        annotations = build_annotations()
+        annotated_result = apply_annotations(review_result, annotations)
         # Display results on screen
-        display_results(review_result)
+        display_results(annotated_result, review_result)
 
         # Check for previous reviews
         history = get_project_review_history(project_name.strip(), limit=2)
@@ -540,34 +560,32 @@ def main():
             st.info("📂 Previous review found for this project")
 
             if st.checkbox("Compare with previous review"):
-                old_review = history[1]["result"]
-                new_review = review_result.model_dump()
-
-                comparison = compare_reviews(old_review, new_review)
+                old_review, _, old_annotated = load_review_package(history[1]["result"])
+                comparison = compare_reviews(
+                    old_annotated.model_dump(),
+                    annotated_result.model_dump(),
+                )
                 display_comparison(comparison)
 
         # Save to database once per run
         if not st.session_state.review_saved:
-            save_review(project_name.strip(), ruleset, scale_note, review_result.model_dump_json())
+            package = {"review": review_result.model_dump(), "annotations": annotations}
+            save_review(
+                project_name.strip(),
+                ruleset,
+                scale_note,
+                json.dumps(package),
+            )
             st.session_state.review_saved = True
             st.success("💾 Review saved to database")
 
         # Generate and offer PDF download
-        if st.session_state.report_pdf is None:
-            with st.spinner("Generating PDF report..."):
-                annotations = {
-                    "dismissed_issues": list(st.session_state.get("dismissed_issues", set())),
-                    "notes": st.session_state.get("issue_notes", {}),
-                    "severity_overrides": st.session_state.get("issue_severity_overrides", {}),
-                }
-                st.session_state.report_pdf = build_pdf_report(
-                    review_result,
-                    annotations=annotations,
-                )
+        with st.spinner("Generating PDF report..."):
+            pdf_bytes = build_pdf_report(annotated_result)
 
         st.download_button(
             "📥 Download PDF Report",
-            st.session_state.report_pdf,
+            pdf_bytes,
             file_name=f"{project_name.replace(' ', '_')}_review.pdf",
             mime="application/pdf"
         )
@@ -605,7 +623,8 @@ def main():
             # Debug: Show raw result structure
             with st.expander("🔧 Debug: Raw Result Data"):
                 st.json(result.model_dump())
-            
+
+            result = assign_issue_ids(result)
             st.session_state.review_result = result
             st.session_state.review_saved = False
             st.session_state.report_pdf = None
@@ -616,6 +635,7 @@ def main():
             st.exception(e)
             st.stop()
     elif st.session_state.get("review_result") is not None:
+        st.session_state.review_result = assign_issue_ids(st.session_state.review_result)
         render_review_output(st.session_state.review_result)
 
 if __name__ == "__main__":

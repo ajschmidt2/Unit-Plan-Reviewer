@@ -5,6 +5,7 @@ Ruleset = Literal["FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"]
 PageType = str
 
 class Issue(BaseModel):
+    issue_id: str = ""
     severity: Literal["High", "Medium", "Low"]
     location_hint: str
     finding: str
@@ -12,6 +13,8 @@ class Issue(BaseModel):
     reference: Optional[str] = None
     confidence: Literal["High", "Medium", "Low"]
     measurement: Optional[str] = None  # Extracted measurement if available
+    reviewer_note: Optional[str] = None
+    effective_severity: Optional[str] = None
 
 class PageReview(BaseModel):
     page_index: int
