@@ -83,6 +83,11 @@ def build_pdf_report(result):
     buf = BytesIO()
     c = FooterCanvas(buf, pagesize=letter)
     w, h = letter
+    # Define margins
+    left_margin = inch
+    right_margin = w - inch
+    max_text_width = right_margin - left_margin
+
     annotations = annotations or {}
     dismissed = set(annotations.get("dismissed_issues", []))
     notes = annotations.get("notes", {}) or {}
@@ -96,6 +101,9 @@ def build_pdf_report(result):
     right_margin = w - inch
     max_text_width = right_margin - left_margin
 
+    def issue_id(page_index: int, issue_index_1based: int) -> str:
+        return f"p{page_index}_i{issue_index_1based}"
+    
     # ===== COVER PAGE =====
     y = h - 2 * inch
     
@@ -135,7 +143,7 @@ def build_pdf_report(result):
         y -= 0.3 * inch
         
         c.setFont("Helvetica", 10)
-        y = wrap_text(c, result.overall_summary, left_margin, y, max_text_width, "Helvetica", 10)
+        y = wrap_text(c, safe_str(result.overall_summary), left_margin, y, max_text_width, "Helvetica", 10)
         y -= 0.5 * inch
     
     # Disclaimer
@@ -172,7 +180,7 @@ def build_pdf_report(result):
         c.setFont("Helvetica", 9)
         sheet_no = getattr(page, "sheet_number", None) or getattr(page, "sheet_id", None) or "N/A"
         sheet_title = getattr(page, "sheet_title", None) or "N/A"
-        sheet_text = f"Sheet: {sheet_no} — {sheet_title}"
+        sheet_text = f"Sheet: {safe_str(sheet_no)} — {safe_str(sheet_title)}"
         c.drawString(left_margin, y, sheet_text)
         y -= 0.25 * inch
         
@@ -184,7 +192,7 @@ def build_pdf_report(result):
         # Page summary with wrapping
         if page.summary:
             c.setFont("Helvetica-Oblique", 9)
-            y = wrap_text(c, f"Summary: {page.summary}", left_margin, y, max_text_width, "Helvetica-Oblique", 9)
+            y = wrap_text(c, f"Summary: {safe_str(page.summary)}", left_margin, y, max_text_width, "Helvetica-Oblique", 9)
             y -= 0.3 * inch
 
         if not page.issues:
@@ -199,8 +207,8 @@ def build_pdf_report(result):
                     y = h - inch
                 
                 # Issue number and severity badge
-                iid = issue_id(page.page_index, idx)
-                if iid in dismissed:
+                iid = getattr(issue, "issue_id", None)
+                if iid and iid in dismissed:
                     continue
                 effective_severity = severity_overrides.get(iid, issue.severity)
                 issue_note = (notes.get(iid) or "").strip()
@@ -209,7 +217,7 @@ def build_pdf_report(result):
                 severity_symbol = {"High": "●", "Medium": "◐", "Low": "○"}
                 header = (
                     f"{issue_num}. {severity_symbol.get(effective_severity, '○')} "
-                    f"[{effective_severity}] {issue.location_hint}"
+                    f"[{effective_severity}] {safe_str(issue.location_hint)}"
                 )
                 c.drawString(left_margin, y, header)
                 c.setFillColorRGB(0, 0, 0)
@@ -222,26 +230,26 @@ def build_pdf_report(result):
                 
                 # Finding with wrapping
                 c.setFont("Helvetica", 9)
-                finding_text = f"<b>Finding:</b> {issue.finding}"
+                finding_text = f"<b>Finding:</b> {safe_str(issue.finding)}"
                 y = wrap_text(c, finding_text, left_margin + 0.2*inch, y, max_text_width - 0.2*inch, "Helvetica", 9)
                 y -= 0.15 * inch
                 
                 # Measurement if present
                 if issue.measurement:
                     c.setFont("Helvetica", 9)
-                    meas_text = f"<b>Measured:</b> {issue.measurement}"
+                    meas_text = f"<b>Measured:</b> {safe_str(issue.measurement)}"
                     y = wrap_text(c, meas_text, left_margin + 0.2*inch, y, max_text_width - 0.2*inch, "Helvetica", 9)
                     y -= 0.15 * inch
                 
                 # Recommendation with wrapping
-                rec_text = f"<b>Recommendation:</b> {issue.recommendation}"
+                rec_text = f"<b>Recommendation:</b> {safe_str(issue.recommendation)}"
                 y = wrap_text(c, rec_text, left_margin + 0.2*inch, y, max_text_width - 0.2*inch, "Helvetica", 9)
                 y -= 0.15 * inch
                 
                 # Reference if present
                 if issue.reference:
                     c.setFont("Helvetica-Oblique", 8)
-                    ref_text = f"<b>Reference:</b> {issue.reference}"
+                    ref_text = f"<b>Reference:</b> {safe_str(issue.reference)}"
                     y = wrap_text(c, ref_text, left_margin + 0.2*inch, y, max_text_width - 0.2*inch, "Helvetica-Oblique", 8)
                     y -= 0.15 * inch
 
