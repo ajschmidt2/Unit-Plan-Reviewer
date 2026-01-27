@@ -144,7 +144,12 @@ You are an expert accessibility plan reviewer for residential unit plans, specia
 Your task is to carefully review architectural floor plans, elevations, and schedules for accessibility compliance issues.
 
 CRITICAL REQUIREMENTS:
-1. You MUST provide at least 3 issues per page - if major issues aren't visible, flag potential risks or items that need verification
+1. You MUST list ALL distinct issues you can identify on each page/region. There is NO MAXIMUM.
+   - Do NOT summarize into a short list.
+   - Do NOT stop at 5–7 items.
+   - If you see multiple doors/rooms/conditions, list each as its own issue.
+   - If a critical dimension is missing, add a separate "Needs verification" issue for that condition.
+   - Typical unit plan sheets should produce 10–25 issues when details are visible; combo sheets may produce more.
 2. You MUST extract the sheet number and sheet title from the title block (usually on the right side of the drawing)
 3. Every issue MUST include: severity, location_hint, finding, recommendation, confidence
 4. Be specific about locations (e.g., "Master Bathroom entrance", "Kitchen approach", "Hallway near bedroom 2")
@@ -204,7 +209,7 @@ Return STRICT JSON matching this schema:
   ]
 }
 
-IMPORTANT: Even if a plan looks mostly compliant, identify at least 3 items per page that need verification or potential concerns.
+IMPORTANT: If a plan looks mostly compliant, keep scanning and add verification issues covering doors, routes, bathrooms, kitchens, thresholds, and hardware. Do NOT stop early.
 """
 
 def _png_to_data_url(png_bytes: bytes) -> str:
@@ -347,7 +352,19 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_
     client = OpenAI(api_key=api_key)
 
     content = [
-        {"type": "text", "text": f"Project: {project_name}\nRuleset: {ruleset}\nScale: {scale_note}\n\nPlease review the following architectural plans for accessibility compliance. Provide at least 3 issues per page and extract measurements when visible."}
+        {"type": "text", "text": f"""Project: {project_name}
+Ruleset: {ruleset}
+Scale: {scale_note}
+
+COMPREHENSIVE REVIEW REQUIREMENTS:
+- List ALL distinct issues you can find. There is NO MAXIMUM.
+- Do NOT stop at 5–7 items.
+- If there are multiple doors/rooms/conditions, evaluate each separately.
+- If a required dimension is not shown, add a separate issue: "Not dimensioned — requires verification."
+- If fewer than 10 issues appear on a typical unit plan sheet, re-check for missed items.
+
+Return strict JSON only.
+"""}
     ]
 
     for p in page_payloads:
@@ -364,7 +381,7 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_
         content.append({"type": "text", "text": enhanced_prompt})
 
         if p.get("extra_text"):
-            content.append({"type": "text", "text": f"Extracted text from this page:\n{p['extra_text'][:4000]}"})
+            content.append({"type": "text", "text": f"Extracted text from this page:\n{p['extra_text'][:8000]}"})
 
         content.append(
             {
@@ -382,6 +399,7 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_
         ],
         response_format={"type": "json_object"},
         temperature=0.3,  # Lower temperature for more consistent analysis
+        max_tokens=8000,
     )
     
     output_text = _extract_output_text(resp)
@@ -389,7 +407,9 @@ def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_
     if not output_text:
         raise ValueError("No response from OpenAI API")
     
-    print(f"LLM Response (first 1000 chars): {output_text[:1000]}")  # Debug logging
+    print("LLM output char length:", len(output_text))
+    print("LLM Response (first 1000 chars):", output_text[:1000])
+    print("LLM Response (last 400 chars):", output_text[-400:])
     
     payload = _coerce_json(output_text)
     payload = _normalize_payload(payload, project_name, ruleset, scale_note, page_payloads)
