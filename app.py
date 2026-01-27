@@ -341,16 +341,13 @@ def display_results(result, base_review):
         )
     with col2:
         annotations = build_annotations()
-        try:
-            pdf_bytes = build_pdf_report(base_review, annotations=annotations)
-            st.download_button(
-                "📄 Download PDF Report",
-                data=pdf_bytes,
-                file_name="accessibility_review_report.pdf",
-                mime="application/pdf",
-            )
-        except Exception as exc:
-            st.exception(exc)
+        pdf_bytes = build_pdf_report(base_review, annotations=annotations)
+        st.download_button(
+            "📄 Download PDF Report",
+            data=pdf_bytes,
+            file_name="accessibility_review_report.pdf",
+            mime="application/pdf",
+        )
 
     if st.button("🔄 Reset All Annotations"):
         st.session_state.dismissed_issues = set()
