@@ -48,17 +48,15 @@ def get_project_review_history(project_name: str, limit: int = 10) -> List[Dict]
             payload = json.loads(row[4])
             if isinstance(payload, dict) and "review" in payload:
                 review_payload = payload.get("review", {})
-                annotations = payload.get("annotations", {}) or {}
             else:
                 review_payload = payload
-                annotations = {}
             history.append(
                 {
                     "id": row[0],
                     "created_at": row[1],
                     "ruleset": row[2],
                     "scale_note": row[3],
-                    "result": {"review": review_payload, "annotations": annotations},
+                    "result": {"review": review_payload},
                 }
             )
         return history
