@@ -14,7 +14,7 @@ from src.page_classifier import TAGS, classify_page
 from src.region_extractor import extract_regions
 from src.llm_review import run_review
 from src.report_pdf import build_pdf_report
-from src.annotations import apply_annotations, assign_issue_ids
+from src.annotations import assign_issue_ids
 from src.storage import init_db, save_review, get_project_review_history, compare_reviews
 from src.schemas import ReviewResult
 from src.quality_analysis import ReviewQualityAnalyzer
@@ -38,16 +38,12 @@ class IssueManager:
         """Initialize session state for issue tracking"""
         if 'dismissed_issues' not in st.session_state:
             st.session_state.dismissed_issues = set()
-        if 'issue_notes' not in st.session_state:
-            st.session_state.issue_notes = {}
-        if 'issue_severity_overrides' not in st.session_state:
-            st.session_state.issue_severity_overrides = {}
     
     @staticmethod
     def display_interactive_issue(page_index: int, issue_index: int, issue: dict):
         """Display an issue with interactive controls"""
         IssueManager.initialize_session_state()
-        
+
         issue_id = issue.get("issue_id") or f"p{page_index}_i{issue_index - 1}"
         
         # Check if dismissed
@@ -70,14 +66,9 @@ class IssueManager:
                 "Low": "🟢"
             }
 
-            # Allow severity override
-            current_severity = st.session_state.issue_severity_overrides.get(
-                issue_id, issue['severity']
-            )
-
             st.markdown(
-                f"**{issue_index}. {severity_color.get(current_severity, '⚪')} "
-                f"[{current_severity}] {issue['location_hint']}**"
+                f"**{issue_index}. {severity_color.get(issue['severity'], '⚪')} "
+                f"[{issue['severity']}] {issue['location_hint']}**"
             )
 
         with col2:
@@ -96,73 +87,7 @@ class IssueManager:
             st.markdown(f"**Measured:** {issue['measurement']}")
 
         st.caption(f"*Confidence: {issue['confidence']}*")
-
-        # Add notes section (NO expander — expanders cannot nest)
-        show_controls = st.checkbox(
-            "📝 Add notes / override severity",
-            key=f"show_controls_{issue_id}",
-            value=False,
-        )
-
-        if show_controls:
-            with st.container():
-                st.caption("Overrides & notes")
-
-                new_severity = st.selectbox(
-                    "Override Severity",
-                    ["Keep Original", "High", "Medium", "Low"],
-                    key=f"severity_{issue_id}",
-                )
-
-                if new_severity != "Keep Original" and new_severity != issue["severity"]:
-                    if st.button("Apply Severity Change", key=f"apply_sev_{issue_id}"):
-                        st.session_state.issue_severity_overrides[issue_id] = new_severity
-                        st.rerun()
-
-                existing_note = st.session_state.issue_notes.get(issue_id, "")
-                note = st.text_area(
-                    "Notes",
-                    value=existing_note,
-                    key=f"note_{issue_id}",
-                    placeholder="Add notes about this issue, field verification results, etc.",
-                )
-
-                if st.button("Save Note", key=f"save_note_{issue_id}"):
-                    st.session_state.issue_notes[issue_id] = note
-                    st.success("Note saved!")
-
         st.divider()
-
-    @staticmethod
-    def export_with_annotations(result):
-        """Export review with user annotations"""
-        IssueManager.initialize_session_state()
-
-        annotated = {
-            "review": result.model_dump(),
-            "annotations": {
-                "dismissed_issues": list(st.session_state.dismissed_issues),
-                "notes": st.session_state.issue_notes,
-                "severity_overrides": st.session_state.issue_severity_overrides,
-            }
-        }
-
-        return json.dumps(annotated, indent=2)
-
-    @staticmethod
-    def display_summary_stats():
-        """Display summary of user actions"""
-        IssueManager.initialize_session_state()
-
-        dismissed_count = len(st.session_state.dismissed_issues)
-        notes_count = len([n for n in st.session_state.issue_notes.values() if n.strip()])
-        overrides_count = len(st.session_state.issue_severity_overrides)
-
-        if dismissed_count > 0 or notes_count > 0 or overrides_count > 0:
-            st.info(
-                f"📊 You have: {dismissed_count} dismissed issues, "
-                f"{notes_count} notes, {overrides_count} severity overrides"
-            )
 
 
 def display_quality_metrics(result):
@@ -198,25 +123,13 @@ def display_quality_metrics(result):
                 st.write(suggestion)
 
 
-def build_annotations() -> dict:
-    IssueManager.initialize_session_state()
-    return {
-        "dismissed_issues": list(st.session_state.get("dismissed_issues", set())),
-        "notes": st.session_state.get("issue_notes", {}),
-        "severity_overrides": st.session_state.get("issue_severity_overrides", {}),
-    }
-
-
 def load_review_package(payload: dict):
     if isinstance(payload, dict) and "review" in payload:
         review_payload = payload.get("review", {})
-        annotations = payload.get("annotations", {}) or {}
     else:
         review_payload = payload
-        annotations = {}
     review = assign_issue_ids(ReviewResult.model_validate(review_payload))
-    annotated = apply_annotations(review, annotations)
-    return review, annotations, annotated
+    return review
 
 def display_image_quality_report(page_images, scale_note):
     """Display image quality report in Streamlit"""
@@ -299,11 +212,9 @@ def display_comparison(comparison: dict):
     else:
         st.info("Issue count unchanged")
 
-def display_results(result, base_review):
+def display_results(result):
     """Display results with interactive issue management"""
     st.success("✅ Review Complete!")
-
-    IssueManager.display_summary_stats()
 
     # Overall Summary
     if result.overall_summary:
@@ -333,30 +244,29 @@ def display_results(result, base_review):
             else:
                 st.warning("No issues reported for this page.")
 
-    # Export with annotations
+    # Export review
     col1, col2 = st.columns(2)
     with col1:
-        annotated_json = IssueManager.export_with_annotations(base_review)
         st.download_button(
-            "📥 Download Annotated Review (JSON)",
-            annotated_json,
-            file_name="annotated_review.json",
+            "📥 Download Review (JSON)",
+            json.dumps({"review": result.model_dump()}, indent=2),
+            file_name="review.json",
             mime="application/json"
         )
     with col2:
-        annotations = build_annotations()
-        pdf_bytes = build_pdf_report(base_review, annotations=annotations)
-        st.download_button(
-            "📄 Download PDF Report",
-            data=pdf_bytes,
-            file_name="accessibility_review_report.pdf",
-            mime="application/pdf",
-        )
+        try:
+            pdf_bytes = build_pdf_report(result)
+            st.download_button(
+                "📄 Download PDF Report",
+                data=pdf_bytes,
+                file_name="accessibility_review_report.pdf",
+                mime="application/pdf",
+            )
+        except Exception as e:
+            st.exception(e)
 
-    if st.button("🔄 Reset All Annotations"):
+    if st.button("🔄 Reset Dismissed Issues"):
         st.session_state.dismissed_issues = set()
-        st.session_state.issue_notes = {}
-        st.session_state.issue_severity_overrides = {}
         st.rerun()
 
 def main():
@@ -561,10 +471,8 @@ def main():
     st.write(f"**Selected pages:** {selected_page_indices}")
 
     def render_review_output(review_result):
-        annotations = build_annotations()
-        annotated_result = apply_annotations(review_result, annotations)
         # Display results on screen
-        display_results(annotated_result, review_result)
+        display_results(review_result)
 
         # Check for previous reviews
         history = get_project_review_history(project_name.strip(), limit=2)
@@ -572,26 +480,25 @@ def main():
             st.info("📂 Previous review found for this project")
 
             if st.checkbox("Compare with previous review"):
-                old_review, _, old_annotated = load_review_package(history[1]["result"])
+                old_review = load_review_package(history[1]["result"])
                 comparison = compare_reviews(
-                    old_annotated.model_dump(),
-                    annotated_result.model_dump(),
+                    old_review.model_dump(),
+                    review_result.model_dump(),
                 )
                 display_comparison(comparison)
 
         # Save to database once per run
         if not st.session_state.review_saved:
-            package = {"review": review_result.model_dump(), "annotations": annotations}
             save_review(
                 project_name.strip(),
                 ruleset,
                 scale_note,
-                json.dumps(package),
+                json.dumps({"review": review_result.model_dump()}),
             )
             st.session_state.review_saved = True
             st.success("💾 Review saved to database")
 
-        # PDF download handled in display_results to ensure latest annotations are used.
+        # PDF download handled in display_results.
 
     if st.button("Run Review", type="primary"):
         if not project_name.strip():
