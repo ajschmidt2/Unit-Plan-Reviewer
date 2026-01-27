@@ -5,7 +5,7 @@ Ruleset = Literal["FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"]
 PageType = str
 
 class Issue(BaseModel):
-    issue_id: str = ""
+    issue_id: Optional[str] = None
     severity: Literal["High", "Medium", "Low"]
     location_hint: str
     finding: str
