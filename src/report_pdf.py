@@ -79,7 +79,7 @@ def _severity_color(severity: str) -> tuple:
     return colors.get(severity, (0, 0, 0))
 
 
-def build_pdf_report(result, annotations=None):
+def build_pdf_report(result):
     buf = BytesIO()
     c = FooterCanvas(buf, pagesize=letter)
     w, h = letter
