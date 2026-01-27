@@ -32,8 +32,11 @@ def apply_annotations(review: Union[ReviewResult, Dict[str, Any]], annotations: 
     for page in result.pages:
         new_issues = []
         for idx, issue in enumerate(page.issues):
-            iid = issue.issue_id or f"p{page.page_index}_i{idx}"
-            issue.issue_id = iid
+            iid = getattr(issue, "issue_id", None) or f"p{page.page_index}_i{idx}"
+            if isinstance(issue, dict):
+                issue["issue_id"] = iid
+            else:
+                setattr(issue, "issue_id", iid)
             if iid in dismissed:
                 continue
             override = overrides.get(iid)
