@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from typing import List, Dict
 from openai import OpenAI
 from .schemas import ReviewResult
@@ -231,31 +232,50 @@ def _extract_output_text(response) -> str | None:
 def _coerce_json(text: str) -> dict:
     if not text or not isinstance(text, str):
         raise ValueError("LLM response was empty.")
-    
+    cleaned = text.strip()
+
+    def _strip_trailing_commas(payload: str) -> str:
+        return re.sub(r",\s*([}\]])", r"\1", payload)
+
+    decoder = json.JSONDecoder()
+
     # Try direct parsing first
     try:
-        return json.loads(text)
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Try raw decode to ignore trailing non-JSON content
+    try:
+        parsed, _ = decoder.raw_decode(cleaned)
+        return parsed
     except json.JSONDecodeError:
         pass
     
     # Try extracting JSON from markdown code blocks
-    if "```json" in text:
-        start = text.find("```json") + 7
-        end = text.find("```", start)
+    if "```json" in cleaned:
+        start = cleaned.find("```json") + 7
+        end = cleaned.find("```", start)
         if end > start:
             try:
-                return json.loads(text[start:end].strip())
+                return json.loads(cleaned[start:end].strip())
             except json.JSONDecodeError:
                 pass
     
     # Try finding JSON object boundaries
-    start = text.find("{")
-    end = text.rfind("}")
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
     if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(text[start:end + 1])
-        except json.JSONDecodeError:
-            pass
+        extracted = cleaned[start:end + 1].strip()
+        for candidate in (extracted, _strip_trailing_commas(extracted)):
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                try:
+                    parsed, _ = decoder.raw_decode(candidate)
+                    return parsed
+                except json.JSONDecodeError:
+                    continue
     
     raise ValueError(f"LLM response was not valid JSON. First 500 chars: {text[:500]}")
 
