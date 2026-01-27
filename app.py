@@ -42,14 +42,14 @@ class IssueManager:
             st.session_state.issue_notes = {}
         if 'issue_severity_overrides' not in st.session_state:
             st.session_state.issue_severity_overrides = {}
-
+    
     @staticmethod
     def display_interactive_issue(page_index: int, issue_index: int, issue: dict):
         """Display an issue with interactive controls"""
         IssueManager.initialize_session_state()
-
+        
         issue_id = issue.get("issue_id") or f"p{page_index}_i{issue_index - 1}"
-
+        
         # Check if dismissed
         if issue_id in st.session_state.dismissed_issues:
             st.markdown(f"~~{issue_index}. [Dismissed] {issue['location_hint']}~~")
@@ -218,7 +218,6 @@ def load_review_package(payload: dict):
     annotated = apply_annotations(review, annotations)
     return review, annotations, annotated
 
-
 def display_image_quality_report(page_images, scale_note):
     """Display image quality report in Streamlit"""
     with st.expander("🔍 Image Quality & Scale Analysis"):
@@ -300,7 +299,6 @@ def display_comparison(comparison: dict):
     else:
         st.info("Issue count unchanged")
 
-
 def display_results(result, base_review):
     """Display results with interactive issue management"""
     st.success("✅ Review Complete!")
@@ -347,7 +345,7 @@ def display_results(result, base_review):
         )
     with col2:
         annotations = build_annotations()
-        pdf_bytes = build_pdf_report(result, annotations=annotations)
+        pdf_bytes = build_pdf_report(base_review, annotations=annotations)
         st.download_button(
             "📄 Download PDF Report",
             data=pdf_bytes,
@@ -360,7 +358,6 @@ def display_results(result, base_review):
         st.session_state.issue_notes = {}
         st.session_state.issue_severity_overrides = {}
         st.rerun()
-
 
 def main():
     require_login()
