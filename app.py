@@ -131,15 +131,18 @@ def load_review_package(payload: dict):
     review = assign_issue_ids(ReviewResult.model_validate(review_payload))
     return review
 
-def display_image_quality_report(page_images, scale_note):
+def display_image_quality_report(page_images, scale_note, dpi):
     """Display image quality report in Streamlit"""
     with st.expander("🔍 Image Quality & Scale Analysis"):
         overall_suitable = True
 
         for page_img in page_images:
-            quality = ImageQualityChecker.check_image_quality(page_img.png_bytes)
+            choice, quality = ImageQualityChecker.choose_best_for_vision(
+                page_img.png_bytes,
+                page_img.enhanced_png_bytes,
+            )
 
-            st.write(f"**Page {page_img.page_index}**")
+            st.write(f"**Page {page_img.page_index}** (using {choice})")
 
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -163,7 +166,7 @@ def display_image_quality_report(page_images, scale_note):
 
         # Scale verification
         st.subheader("Scale Verification")
-        scale_info = ScaleVerifier.suggest_measurement_extraction(scale_note, 200)
+        scale_info = ScaleVerifier.suggest_measurement_extraction(scale_note, dpi)
         st.info(scale_info)
 
         return overall_suitable
@@ -285,6 +288,7 @@ def main():
 
     auto_tagging = st.checkbox("Auto-detect content tags", value=True)
     use_region_detection = st.checkbox("Use region detection / crop views", value=True)
+    dpi = st.sidebar.select_slider("Render DPI", options=[300, 350, 450, 600], value=450)
 
     uploaded = st.file_uploader("Upload PDF", type=["pdf"])
     if not uploaded:
@@ -306,14 +310,14 @@ def main():
         st.session_state.report_pdf = None
 
     with st.spinner("Processing PDF..."):
-        pages = pdf_to_page_images(pdf_bytes)
+        pages = pdf_to_page_images(pdf_bytes, dpi=dpi)
         page_texts = extract_page_texts(pdf_bytes)
         title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
 
     st.success(f"✅ Loaded {len(pages)} pages from PDF")
 
     # Display image quality analysis
-    quality_ok = display_image_quality_report(pages, scale_note)
+    quality_ok = display_image_quality_report(pages, scale_note, dpi)
 
     if not quality_ok:
         st.warning("⚠️ Some image quality issues detected. Review accuracy may be affected.")
@@ -429,7 +433,7 @@ def main():
                     regions = extract_regions(
                         pdf_bytes,
                         p.page_index,
-                        dpi=200,
+                        dpi=dpi,
                         selected_tags=resolved_tags,
                     )
                     st.markdown("**Detected regions:**")
@@ -454,13 +458,28 @@ def main():
                             }
                         )
                 else:
+                    dimension_heavy = {
+                        "Floor Plan",
+                        "Interior Elevations",
+                        "Door Schedule",
+                        "RCP / Ceiling",
+                        "Reflected Ceiling Plan",
+                    }
+                    if any(tag in dimension_heavy for tag in resolved_tags):
+                        img_choice = "enhanced"
+                    else:
+                        img_choice, _ = ImageQualityChecker.choose_best_for_vision(
+                            p.png_bytes,
+                            p.enhanced_png_bytes,
+                        )
+                    png_bytes = p.enhanced_png_bytes if img_choice == "enhanced" else p.png_bytes
                     selected.append(
                         {
                             "page_index": p.page_index,
                             "page_label": page_label,
                             "tag": ", ".join(resolved_tags),
                             "scale_note": scale_note,
-                            "png_bytes": p.png_bytes,
+                            "png_bytes": png_bytes,
                             "sheet_id_hint": sheet_number,
                             "sheet_title_hint": sheet_title,
                             "extra_text": extra_text,

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import fitz
-from PIL import Image, ImageStat
+from PIL import Image, ImageStat, ImageOps, ImageEnhance
 import io
 import re
 
@@ -9,24 +9,56 @@ import re
 class PageImage:
     page_index: int
     png_bytes: bytes
+    enhanced_png_bytes: bytes
     width: int
     height: int
+    dpi: int
 
-def pdf_to_page_images(pdf_bytes: bytes, dpi: int = 200) -> List[PageImage]:
+def _to_png_bytes(img: Image.Image, dpi: int) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True, dpi=(dpi, dpi))
+    return buf.getvalue()
+
+def _enhance_for_plans(img: Image.Image) -> Image.Image:
+    """
+    Conservative enhancements: improve legibility without changing geometry.
+    Avoid hard thresholding; it can delete light dimension strings.
+    """
+    x = ImageOps.autocontrast(img, cutoff=1)
+    x = ImageEnhance.Sharpness(x).enhance(1.35)
+    x = ImageEnhance.Contrast(x).enhance(1.15)
+    return x
+
+def pdf_to_page_images(
+    pdf_bytes: bytes,
+    dpi: int = 450,
+    max_pages: Optional[int] = None,
+) -> List[PageImage]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    out = []
+    out: List[PageImage] = []
     zoom = dpi / 72.0
     mat = fitz.Matrix(zoom, zoom)
 
-    for i in range(len(doc)):
+    page_count = len(doc) if max_pages is None else min(len(doc), max_pages)
+    for i in range(page_count):
         page = doc.load_page(i)
         pix = page.get_pixmap(matrix=mat, alpha=False)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        base_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        enhanced_img = _enhance_for_plans(base_img)
+        base_png = _to_png_bytes(base_img, dpi=dpi)
+        enhanced_png = _to_png_bytes(enhanced_img, dpi=dpi)
+        out.append(
+            PageImage(
+                page_index=i,
+                png_bytes=base_png,
+                enhanced_png_bytes=enhanced_png,
+                width=pix.width,
+                height=pix.height,
+                dpi=dpi,
+            )
+        )
 
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
-        out.append(PageImage(i, buf.getvalue(), pix.width, pix.height))
-
+    doc.close()
     return out
 
 def extract_pdf_text(pdf_bytes: bytes, max_pages: int = 30) -> str:
@@ -111,7 +143,7 @@ class ImageQualityChecker:
     MIN_DPI = 150
     
     @staticmethod
-    def check_image_quality(png_bytes: bytes) -> Dict:
+    def _score_png(png_bytes: bytes) -> Dict:
         """Analyze image quality metrics"""
         img = Image.open(io.BytesIO(png_bytes))
         width, height = img.size
@@ -163,6 +195,30 @@ class ImageQualityChecker:
             "suitable_for_review": len(warnings) == 0
         }
 
+    @staticmethod
+    def check_image_quality(png_bytes: bytes) -> Dict:
+        return ImageQualityChecker._score_png(png_bytes)
+
+    @staticmethod
+    def choose_best_for_vision(base_png: bytes, enhanced_png: bytes) -> Tuple[str, Dict]:
+        """
+        Returns ("base" or "enhanced", metrics_for_winner)
+        Prefer higher sharpness, then higher quality_score.
+        """
+        a = ImageQualityChecker._score_png(base_png)
+        b = ImageQualityChecker._score_png(enhanced_png)
+
+        if (b["sharpness"], b["quality_score"]) > (a["sharpness"], a["quality_score"]):
+            return "enhanced", b
+        return "base", a
+
+def _parse_fraction(s: str) -> float:
+    s = s.strip()
+    if "/" in s:
+        num, den = s.split("/", 1)
+        return float(num) / float(den)
+    return float(s)
+
 class ScaleVerifier:
     """Verify and parse architectural scale"""
     
@@ -186,9 +242,10 @@ class ScaleVerifier:
             return ScaleVerifier.COMMON_SCALES[scale_str]
         
         # Try parsing format like 1/4" = 1'-0"
-        match = re.match(r'(\d+(?:/\d+)?)"?\s*=\s*(\d+)\'-(\d+)"', scale_str)
+        match = re.match(r'(\d+(?:\s+\d+/\d+|/\d+)?)"?\s*=\s*(\d+)\'-(\d+)"', scale_str)
         if match:
-            inches_on_paper = eval(match.group(1))  # e.g., 1/4
+            inches_on_paper_raw = match.group(1).replace(" ", "")
+            inches_on_paper = _parse_fraction(inches_on_paper_raw)
             feet = int(match.group(2))
             inches = int(match.group(3))
             inches_real = feet * 12 + inches
