@@ -1,9 +1,20 @@
 import base64
 import json
 import re
-from typing import List, Dict
+import importlib.util
+from typing import List, Dict, Optional
+
 from openai import OpenAI
 from .schemas import ReviewResult
+
+# --- NEW imports for Gemini ---
+
+genai = None
+gemini_types = None
+if importlib.util.find_spec("google.genai") is not None:
+    from google import genai
+    from google.genai import types as gemini_types
+
 
 # Page-specific analysis guides
 PAGE_TYPE_ANALYSIS = {
@@ -77,11 +88,12 @@ def _normalize_tag(tag: str) -> str:
         return TAG_TO_PAGE_TYPE[tag]
     return tag
 
+
 def build_enhanced_prompt(page_label: str, ruleset: str) -> str:
     """Build a targeted prompt based on page type and ruleset"""
     normalized = _normalize_tag(page_label)
     analysis_guide = PAGE_TYPE_ANALYSIS.get(normalized, PAGE_TYPE_ANALYSIS["Other"])
-    
+
     prompt = f"""
 For this {page_label}, focus your accessibility review on these specific areas:
 
@@ -89,14 +101,14 @@ FOCUS AREAS FOR {page_label.upper()}:
 """
     for i, area in enumerate(analysis_guide["focus_areas"], 1):
         prompt += f"\n{i}. {area}"
-    
+
     prompt += f"""
 
 CRITICAL MEASUREMENTS TO VERIFY:
 """
     for measurement in analysis_guide["critical_measurements"]:
         prompt += f"\n- {measurement}"
-    
+
     prompt += f"""
 
 MEASUREMENT EXTRACTION:
@@ -108,7 +120,7 @@ MEASUREMENT EXTRACTION:
 
 RULESET REQUIREMENTS ({ruleset}):
 """
-    
+
     if ruleset == "FHA":
         prompt += """
 - Doors: 32" clear opening (nominal 2'10" door)
@@ -136,8 +148,9 @@ RULESET REQUIREMENTS ({ruleset}):
 - Per ANSI A117.1 Type B (less stringent than Type A)
 - Usable doors, accessible routes, and reinforcement only
 """
-    
+
     return prompt
+
 
 SYSTEM_INSTRUCTIONS = """
 You are an expert accessibility plan reviewer for residential unit plans, specializing in FHA and ANSI A117.1 compliance.
@@ -213,9 +226,20 @@ Return STRICT JSON matching this schema:
 IMPORTANT: If a plan looks mostly compliant, keep scanning and add verification issues covering doors, routes, bathrooms, kitchens, thresholds, and hardware. Do NOT stop early.
 """
 
+# --- NEW: Agentic Vision addendum (Gemini) ---
+AGENTIC_VISION_ADDENDUM = """
+AGENTIC VISION REQUIREMENTS (IMPORTANT):
+- Do NOT guess.
+- If any dimension/label/note is too small or unclear, you MUST use code execution to crop/zoom/rotate the image until readable.
+- If you still cannot read it after inspection, create a "Needs verification" issue for that condition and set confidence Low.
+- Prefer reporting the exact dimension string as printed (e.g., 2'-10", 3'-0", 32").
+"""
+
+
 def _png_to_data_url(png_bytes: bytes) -> str:
     b64 = base64.b64encode(png_bytes).decode("utf-8")
     return f"data:image/png;base64,{b64}"
+
 
 def _extract_output_text(response) -> str | None:
     if hasattr(response, "output_text") and response.output_text:
@@ -229,6 +253,7 @@ def _extract_output_text(response) -> str | None:
                     return content.text
     return None
 
+
 def _coerce_json(text: str) -> dict:
     if not text or not isinstance(text, str):
         raise ValueError("LLM response was empty.")
@@ -239,20 +264,17 @@ def _coerce_json(text: str) -> dict:
 
     decoder = json.JSONDecoder()
 
-    # Try direct parsing first
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    # Try raw decode to ignore trailing non-JSON content
     try:
         parsed, _ = decoder.raw_decode(cleaned)
         return parsed
     except json.JSONDecodeError:
         pass
-    
-    # Try extracting JSON from markdown code blocks
+
     if "```json" in cleaned:
         start = cleaned.find("```json") + 7
         end = cleaned.find("```", start)
@@ -261,8 +283,7 @@ def _coerce_json(text: str) -> dict:
                 return json.loads(cleaned[start:end].strip())
             except json.JSONDecodeError:
                 pass
-    
-    # Try finding JSON object boundaries
+
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -276,13 +297,15 @@ def _coerce_json(text: str) -> dict:
                     return parsed
                 except json.JSONDecodeError:
                     continue
-    
+
     raise ValueError(f"LLM response was not valid JSON. First 500 chars: {text[:500]}")
+
 
 def _coerce_choice(value: str | None, allowed: set[str], fallback: str) -> str:
     if value in allowed:
         return value
     return fallback
+
 
 def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_payloads):
     if not isinstance(payload, dict):
@@ -365,12 +388,15 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
             }
         )
     data["pages"] = normalized_pages
-    data["ruleset"] = _coerce_choice(data.get("ruleset"), {"FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"}, ruleset)
+    data["ruleset"] = _coerce_choice(
+        data.get("ruleset"),
+        {"FHA", "ANSI_A1171_TYPE_A", "ANSI_A1171_TYPE_B"},
+        ruleset
+    )
     return data
 
-def run_review(api_key, project_name, ruleset, scale_note, page_payloads, model_name="gpt-4o-mini"):
-    client = OpenAI(api_key=api_key)
 
+def _build_openai_content(project_name, ruleset, scale_note, page_payloads):
     content = [
         {"type": "text", "text": f"""Project: {project_name}
 Ruleset: {ruleset}
@@ -409,8 +435,20 @@ Return strict JSON only.
                 "image_url": {"url": _png_to_data_url(p["png_bytes"])},
             }
         )
+    return content
 
-    # Use chat completions (standard approach for gpt-4o-mini)
+
+def _openai_run_review(
+    openai_api_key: str,
+    project_name: str,
+    ruleset: str,
+    scale_note: str,
+    page_payloads: list[dict],
+    model_name: str = "gpt-4o-mini",
+) -> ReviewResult:
+    client = OpenAI(api_key=openai_api_key)
+    content = _build_openai_content(project_name, ruleset, scale_note, page_payloads)
+
     resp = client.chat.completions.create(
         model=model_name,
         messages=[
@@ -418,20 +456,141 @@ Return strict JSON only.
             {"role": "user", "content": content}
         ],
         response_format={"type": "json_object"},
-        temperature=0.3,  # Lower temperature for more consistent analysis
+        temperature=0.3,
         max_tokens=8000,
     )
-    
+
     output_text = _extract_output_text(resp)
-    
     if not output_text:
         raise ValueError("No response from OpenAI API")
-    
-    print("LLM output char length:", len(output_text))
-    print("LLM Response (first 1000 chars):", output_text[:1000])
-    print("LLM Response (last 400 chars):", output_text[-400:])
-    
+
     payload = _coerce_json(output_text)
     payload = _normalize_payload(payload, project_name, ruleset, scale_note, page_payloads)
-
     return ReviewResult.model_validate(payload)
+
+
+def _gemini_run_review_per_page(
+    gemini_api_key: str,
+    project_name: str,
+    ruleset: str,
+    scale_note: str,
+    page_payloads: list[dict],
+    model_name: str = "gemini-3-flash-preview",
+) -> ReviewResult:
+    """
+    Gemini Agentic Vision approach:
+    - One request per page/region so Gemini can use code execution to crop/zoom.
+    - Merge results into a single ReviewResult.
+    """
+    if genai is None or gemini_types is None:
+        raise RuntimeError("google-genai is not installed. Add google-genai to requirements.txt.")
+
+    client = genai.Client(api_key=gemini_api_key)
+
+    merged_pages: list[dict] = []
+    page_summaries: list[str] = []
+
+    for p in page_payloads:
+        page_index = p.get("page_index", 0)
+        page_label = p.get("page_label", "Combo Sheet")
+        region_tag = p.get("tag", page_label)
+        tag_label = _normalize_tag(region_tag)
+        enhanced_prompt = build_enhanced_prompt(tag_label, ruleset)
+
+        user_prompt = f"""Project: {project_name}
+Ruleset: {ruleset}
+Scale: {p.get('scale_note', scale_note)}
+
+=== PAGE {page_index} — {page_label} ===
+REGION TAG: {region_tag}
+{f"Anchor: {p.get('anchor_text')}" if p.get("anchor_text") else ""}
+
+{enhanced_prompt}
+
+{("Extracted text from this page:\n" + p["extra_text"][:8000]) if p.get("extra_text") else ""}
+
+Return STRICT JSON matching the schema. Include at least 10 issues when details are visible; otherwise add verification issues.
+"""
+
+        system_text = SYSTEM_INSTRUCTIONS.strip() + "\n\n" + AGENTIC_VISION_ADDENDUM.strip()
+
+        resp = client.models.generate_content(
+            model=model_name,
+            contents=[
+                gemini_types.Content(
+                    role="user",
+                    parts=[
+                        gemini_types.Part.from_text(system_text),
+                        gemini_types.Part.from_text(user_prompt),
+                        gemini_types.Part.from_bytes(data=p["png_bytes"], mime_type="image/png"),
+                    ],
+                )
+            ],
+            config=gemini_types.GenerateContentConfig(
+                tools=[gemini_types.Tool(code_execution=gemini_types.ToolCodeExecution)],
+                temperature=0.2,
+            ),
+        )
+
+        out_text = getattr(resp, "text", None)
+        if not out_text:
+            raise ValueError(f"Gemini returned empty text for page {page_index}.")
+
+        page_payload = _coerce_json(out_text)
+        normalized = _normalize_payload(page_payload, project_name, ruleset, scale_note, [p])
+
+        if normalized.get("pages"):
+            merged_pages.extend(normalized["pages"])
+        if normalized.get("overall_summary"):
+            page_summaries.append(normalized["overall_summary"])
+
+    merged = {
+        "project_name": project_name or "",
+        "ruleset": ruleset,
+        "scale_note": scale_note or "",
+        "overall_summary": " ".join(s for s in page_summaries if s).strip(),
+        "pages": merged_pages,
+    }
+
+    merged = _normalize_payload(merged, project_name, ruleset, scale_note, page_payloads)
+    return ReviewResult.model_validate(merged)
+
+
+def run_review(
+    api_key: str,
+    project_name: str,
+    ruleset: str,
+    scale_note: str,
+    page_payloads: list[dict],
+    model_name: str = "gpt-4o-mini",
+    provider: str = "openai",
+    gemini_api_key: Optional[str] = None,
+    gemini_model: str = "gemini-3-flash-preview",
+) -> ReviewResult:
+    """
+    Backwards compatible entrypoint used by app.py.
+    - provider='openai': uses existing OpenAI multimodal call.
+    - provider='gemini': uses Gemini 3 Flash + code execution per page for agentic vision.
+    """
+    provider = (provider or "openai").strip().lower()
+
+    if provider == "gemini":
+        if not gemini_api_key:
+            raise ValueError("Missing GEMINI_API_KEY for provider='gemini'.")
+        return _gemini_run_review_per_page(
+            gemini_api_key=gemini_api_key,
+            project_name=project_name,
+            ruleset=ruleset,
+            scale_note=scale_note,
+            page_payloads=page_payloads,
+            model_name=gemini_model,
+        )
+
+    return _openai_run_review(
+        openai_api_key=api_key,
+        project_name=project_name,
+        ruleset=ruleset,
+        scale_note=scale_note,
+        page_payloads=page_payloads,
+        model_name=model_name,
+    )
