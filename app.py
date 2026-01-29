@@ -1,6 +1,8 @@
 import subprocess
 import gc
+import io
 import fitz
+from PIL import Image
 import streamlit as st
 import json
 from src.auth import require_login
@@ -174,6 +176,14 @@ def display_image_quality_report(page_images, scale_note, dpi):
         return overall_suitable
 
 
+def _crop_png_bytes(png_bytes: bytes, crop_box: tuple[int, int, int, int], dpi: int) -> bytes:
+    img = Image.open(io.BytesIO(png_bytes))
+    cropped = img.crop(crop_box)
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG", optimize=True, dpi=(dpi, dpi))
+    return buf.getvalue()
+
+
 def display_comparison(comparison: dict):
     """Display comparison results in Streamlit"""
     st.subheader("📊 Comparison with Previous Review")
@@ -290,6 +300,7 @@ def main():
 
     auto_tagging = st.checkbox("Auto-detect content tags", value=True)
     use_region_detection = st.checkbox("Use region detection / crop views", value=True)
+    enable_manual_crop = st.checkbox("Enable manual crop window", value=False)
     dpi = st.sidebar.select_slider(
         "Render DPI",
         options=[150, 200, 300, 450],
@@ -428,7 +439,30 @@ def main():
 
     for p in pages:
         with st.expander(f"Page {p.page_index}"):
-            st.image(p.png_bytes, use_container_width=True)
+            crop_box = None
+            crop_preview = p.png_bytes
+
+            if enable_manual_crop:
+                st.caption("Manual crop window (percentages)")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    left_pct = st.slider("Left %", 0, 90, 0, key=f"crop_left_{p.page_index}")
+                    top_pct = st.slider("Top %", 0, 90, 0, key=f"crop_top_{p.page_index}")
+                with col_b:
+                    right_pct = st.slider("Right %", 10, 100, 100, key=f"crop_right_{p.page_index}")
+                    bottom_pct = st.slider("Bottom %", 10, 100, 100, key=f"crop_bottom_{p.page_index}")
+
+                if right_pct <= left_pct or bottom_pct <= top_pct:
+                    st.warning("Crop bounds are invalid. Adjust left/top/right/bottom percentages.")
+                else:
+                    left_px = int(p.width * left_pct / 100)
+                    right_px = int(p.width * right_pct / 100)
+                    top_px = int(p.height * top_pct / 100)
+                    bottom_px = int(p.height * bottom_pct / 100)
+                    crop_box = (left_px, top_px, right_px, bottom_px)
+                    crop_preview = _crop_png_bytes(p.png_bytes, crop_box, p.dpi)
+
+            st.image(crop_preview, use_container_width=True)
 
             title_block = title_blocks[p.page_index] if p.page_index < len(title_blocks) else ""
             page_text = page_texts.get(p.page_index, "")
@@ -574,6 +608,8 @@ def main():
                             p.enhanced_png_bytes,
                         )
                     png_bytes = p.enhanced_png_bytes if img_choice == "enhanced" else p.png_bytes
+                    if crop_box:
+                        png_bytes = _crop_png_bytes(png_bytes, crop_box, p.dpi)
                     selected.append(
                         {
                             "page_index": p.page_index,
