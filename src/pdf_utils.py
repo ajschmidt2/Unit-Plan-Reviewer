@@ -34,46 +34,134 @@ def pdf_to_page_images(
     dpi: int = 450,
     max_pages: Optional[int] = None,
 ) -> List[PageImage]:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    out: List[PageImage] = []
-    zoom = dpi / 72.0
-    mat = fitz.Matrix(zoom, zoom)
+    """
+    Convert PDF pages to images with proper error handling and resource cleanup.
+    
+    Args:
+        pdf_bytes: PDF file content as bytes
+        dpi: Dots per inch for rendering (default 450)
+        max_pages: Maximum number of pages to process (default all)
+    
+    Returns:
+        List of PageImage objects
+        
+    Raises:
+        ValueError: If PDF is invalid or corrupted
+        RuntimeError: If processing fails
+    """
+    doc = None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        if len(doc) == 0:
+            raise ValueError("PDF has no pages")
+        
+        out: List[PageImage] = []
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
 
-    page_count = len(doc) if max_pages is None else min(len(doc), max_pages)
-    for i in range(page_count):
-        page = doc.load_page(i)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        base_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        enhanced_img = _enhance_for_plans(base_img)
-        base_png = _to_png_bytes(base_img, dpi=dpi)
-        enhanced_png = _to_png_bytes(enhanced_img, dpi=dpi)
-        out.append(
-            PageImage(
-                page_index=i,
-                png_bytes=base_png,
-                enhanced_png_bytes=enhanced_png,
-                width=pix.width,
-                height=pix.height,
-                dpi=dpi,
-            )
-        )
-
-    doc.close()
-    return out
+        page_count = len(doc) if max_pages is None else min(len(doc), max_pages)
+        
+        for i in range(page_count):
+            try:
+                page = doc.load_page(i)
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                base_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                enhanced_img = _enhance_for_plans(base_img)
+                base_png = _to_png_bytes(base_img, dpi=dpi)
+                enhanced_png = _to_png_bytes(enhanced_img, dpi=dpi)
+                
+                out.append(
+                    PageImage(
+                        page_index=i,
+                        png_bytes=base_png,
+                        enhanced_png_bytes=enhanced_png,
+                        width=pix.width,
+                        height=pix.height,
+                        dpi=dpi,
+                    )
+                )
+            except Exception as page_error:
+                raise RuntimeError(f"Error processing page {i}: {str(page_error)}")
+        
+        return out
+        
+    except fitz.fitz.FileDataError as e:
+        raise ValueError(f"Invalid or corrupted PDF file: {str(e)}")
+    except Exception as e:
+        if "PDF" in str(e) or "corrupted" in str(e).lower():
+            raise ValueError(f"PDF processing error: {str(e)}")
+        raise RuntimeError(f"Error processing PDF: {str(e)}")
+    finally:
+        if doc:
+            try:
+                doc.close()
+            except:
+                pass  # Ignore errors during cleanup
 
 def extract_pdf_text(pdf_bytes: bytes, max_pages: int = 30) -> str:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    texts = []
-    for i in range(min(len(doc), max_pages)):
-        texts.append(doc.load_page(i).get_text("text"))
-    return "\n\n---\n\n".join(texts)
+    """
+    Extract text from PDF with proper error handling.
+    
+    Args:
+        pdf_bytes: PDF file content as bytes
+        max_pages: Maximum pages to extract from (default 30)
+        
+    Returns:
+        Concatenated text from all pages
+    """
+    doc = None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        texts = []
+        for i in range(min(len(doc), max_pages)):
+            try:
+                texts.append(doc.load_page(i).get_text("text"))
+            except Exception as e:
+                texts.append(f"[Error extracting text from page {i}: {str(e)}]")
+        return "\n\n---\n\n".join(texts)
+    except fitz.fitz.FileDataError as e:
+        raise ValueError(f"Invalid PDF file: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Error extracting PDF text: {str(e)}")
+    finally:
+        if doc:
+            try:
+                doc.close()
+            except:
+                pass
 
 def extract_page_texts(pdf_bytes: bytes, max_pages: int = 80) -> dict[int, str]:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    out = {}
-    for i in range(min(len(doc), max_pages)):
-        out[i] = doc.load_page(i).get_text("text")
-    return out
+    """
+    Extract text from each page with proper error handling.
+    
+    Args:
+        pdf_bytes: PDF file content as bytes
+        max_pages: Maximum pages to extract from (default 80)
+        
+    Returns:
+        Dictionary mapping page index to text content
+    """
+    doc = None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        out = {}
+        for i in range(min(len(doc), max_pages)):
+            try:
+                out[i] = doc.load_page(i).get_text("text")
+            except Exception as e:
+                out[i] = f"[Error: {str(e)}]"
+        return out
+    except fitz.fitz.FileDataError as e:
+        raise ValueError(f"Invalid PDF file: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Error extracting page texts: {str(e)}")
+    finally:
+        if doc:
+            try:
+                doc.close()
+            except:
+                pass
 
 def extract_sheet_metadata(text: str) -> tuple[str, str]:
     if not text:
@@ -105,20 +193,46 @@ def extract_title_block_texts(
     max_pages: int = 30,
     right_fraction: float = 0.6
 ) -> List[str]:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    out = []
-    for i in range(min(len(doc), max_pages)):
-        page = doc.load_page(i)
-        blocks = page.get_text("blocks")
-        width = page.rect.width
-        right_edge = width * right_fraction
-        pieces = []
-        for block in blocks:
-            x0, _, _, _, text, *_ = block
-            if x0 >= right_edge and text.strip():
-                pieces.append(text.strip())
-        out.append("\n".join(pieces))
-    return out
+    """
+    Extract text from title blocks (right side of pages) with proper error handling.
+    
+    Args:
+        pdf_bytes: PDF file content as bytes
+        max_pages: Maximum pages to process (default 30)
+        right_fraction: Fraction of page width to consider as right side (default 0.6)
+        
+    Returns:
+        List of title block texts for each page
+    """
+    doc = None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        out = []
+        for i in range(min(len(doc), max_pages)):
+            try:
+                page = doc.load_page(i)
+                blocks = page.get_text("blocks")
+                width = page.rect.width
+                right_edge = width * right_fraction
+                pieces = []
+                for block in blocks:
+                    x0, _, _, _, text, *_ = block
+                    if x0 >= right_edge and text.strip():
+                        pieces.append(text.strip())
+                out.append("\n".join(pieces))
+            except Exception:
+                out.append(f"[Error extracting title block from page {i}]")
+        return out
+    except fitz.fitz.FileDataError as e:
+        raise ValueError(f"Invalid PDF file: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Error extracting title blocks: {str(e)}")
+    finally:
+        if doc:
+            try:
+                doc.close()
+            except:
+                pass
 
 def detect_page_type(text: str, title_block_text: str) -> str:
     """Auto-detect page type from text content"""
@@ -145,55 +259,91 @@ class ImageQualityChecker:
     @staticmethod
     def _score_png(png_bytes: bytes) -> Dict:
         """Analyze image quality metrics"""
-        img = Image.open(io.BytesIO(png_bytes))
-        width, height = img.size
-        
-        # Check DPI if available
-        dpi = img.info.get('dpi', (None, None))
-        dpi_x, dpi_y = dpi if isinstance(dpi, tuple) else (dpi, dpi)
-        
-        # Calculate sharpness (std deviation of pixel values)
-        stat = ImageStat.Stat(img.convert('L'))
-        sharpness = stat.stddev[0]
-        
-        # Calculate file size
-        file_size_kb = len(png_bytes) / 1024
-        
-        warnings = []
-        if width < ImageQualityChecker.MIN_WIDTH or height < ImageQualityChecker.MIN_HEIGHT:
-            warnings.append(
-                f"Low resolution: {width}x{height}. Recommend at least "
-                f"{ImageQualityChecker.MIN_WIDTH}x{ImageQualityChecker.MIN_HEIGHT}"
-            )
-        
-        if dpi_x and dpi_x < ImageQualityChecker.MIN_DPI:
-            warnings.append(
-                f"Low DPI: {dpi_x}. Recommend at least {ImageQualityChecker.MIN_DPI} DPI"
-            )
-        
-        if sharpness < 30:
-            warnings.append(
-                f"Low sharpness score: {sharpness:.0f}. Image may be blurry."
-            )
-        
-        quality_score = 100
-        if width < ImageQualityChecker.MIN_WIDTH:
-            quality_score -= 20
-        if dpi_x and dpi_x < ImageQualityChecker.MIN_DPI:
-            quality_score -= 20
-        if sharpness < 30:
-            quality_score -= 30
-        
-        return {
-            "width": width,
-            "height": height,
-            "dpi": str(dpi_x) if dpi_x else "Unknown",
-            "sharpness": round(sharpness, 1),
-            "file_size_kb": round(file_size_kb, 1),
-            "quality_score": max(0, quality_score),
-            "warnings": warnings,
-            "suitable_for_review": len(warnings) == 0
-        }
+        try:
+            img = Image.open(io.BytesIO(png_bytes))
+            width, height = img.size
+            
+            # Check DPI if available
+            dpi = img.info.get('dpi', (None, None))
+            dpi_x, dpi_y = dpi if isinstance(dpi, tuple) else (dpi, dpi)
+            
+            # Calculate sharpness (std deviation of pixel values)
+            stat = ImageStat.Stat(img.convert('L'))
+            sharpness = stat.stddev[0]
+            
+            # Calculate file size
+            file_size_kb = len(png_bytes) / 1024
+            
+            warnings = []
+            if width < ImageQualityChecker.MIN_WIDTH or height < ImageQualityChecker.MIN_HEIGHT:
+                warnings.append(
+                    f"Low resolution: {width}x{height}. Recommend at least "
+                    f"{ImageQualityChecker.MIN_WIDTH}x{ImageQualityChecker.MIN_HEIGHT}"
+                )
+            
+            if dpi_x and dpi_x < ImageQualityChecker.MIN_DPI:
+                warnings.append(
+                    f"Low DPI: {dpi_x}. Recommend at least {ImageQualityChecker.MIN_DPI} DPI"
+                )
+            
+            if sharpness < 30:
+                warnings.append(
+                    f"Low sharpness score: {sharpness:.0f}. Image may be blurry."
+                )
+            
+            quality_score = 100
+            if width < ImageQualityChecker.MIN_WIDTH:
+                quality_score -= 20
+            if dpi_x and dpi_x < ImageQualityChecker.MIN_DPI:
+                quality_score -= 20
+            if sharpness < 30:
+                quality_score -= 30
+            
+            return {
+                "width": width,
+                "height": height,
+                "dpi": str(dpi_x) if dpi_x else "Unknown",
+                "sharpness": round(sharpness, 1),
+                "file_size_kb": round(file_size_kb, 1),
+                "quality_score": max(0, quality_score),
+                "warnings": warnings,
+                "suitable_for_review": len(warnings) == 0
+            }
+        except Exception as e:
+            return {
+                "width": 0,
+                "height": 0,
+                "dpi": "Unknown",
+                "sharpness": 0,
+                "file_size_kb": 0,
+                "quality_score": 0,
+                "warnings": [f"Error analyzing image: {str(e)}"],
+                "suitable_for_review": False
+            }
+
+    @staticmethod
+    def check_image_quality(png_bytes: bytes) -> Dict:
+        return ImageQualityChecker._score_png(png_bytes)
+
+    @staticmethod
+    def choose_best_for_vision(base_png: bytes, enhanced_png: bytes) -> Tuple[str, Dict]:
+        """
+        Returns ("base" or "enhanced", metrics_for_winner)
+        Prefer higher sharpness, then higher quality_score.
+        """
+        a = ImageQualityChecker._score_png(base_png)
+        b = ImageQualityChecker._score_png(enhanced_png)
+
+        if (b["sharpness"], b["quality_score"]) > (a["sharpness"], a["quality_score"]):
+            return "enhanced", b
+        return "base", a
+
+def _parse_fraction(s: str) -> float:
+    s = s.strip()
+    if "/" in s:
+        num, den = s.split("/", 1)
+        return float(num) / float(den)
+    return float(s)
 
     @staticmethod
     def check_image_quality(png_bytes: bytes) -> Dict:

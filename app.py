@@ -290,11 +290,54 @@ def main():
     use_region_detection = st.checkbox("Use region detection / crop views", value=True)
     dpi = st.sidebar.select_slider("Render DPI", options=[300, 350, 450, 600], value=450)
 
+    # File validation constants
+    MAX_FILE_SIZE_MB = 100
+    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+    def validate_uploaded_file(uploaded_file):
+        """
+        Validate uploaded PDF file before processing.
+        Returns (is_valid, error_message)
+        """
+        file_size = uploaded_file.size
+        if file_size > MAX_FILE_SIZE_BYTES:
+            return False, (
+                f"File too large ({file_size/(1024*1024):.1f}MB). "
+                f"Maximum size: {MAX_FILE_SIZE_MB}MB"
+            )
+
+        if file_size == 0:
+            return False, "File is empty"
+
+        if not uploaded_file.name.lower().endswith(".pdf"):
+            return False, "File must be a PDF"
+
+        try:
+            uploaded_file.seek(0)
+            header = uploaded_file.read(8)
+            uploaded_file.seek(0)
+
+            if not header.startswith(b"%PDF"):
+                return False, "File does not appear to be a valid PDF (missing PDF header)"
+        except Exception as e:
+            return False, f"Error reading file: {str(e)}"
+
+        return True, None
+
     uploaded = st.file_uploader("Upload PDF", type=["pdf"])
     if not uploaded:
         st.stop()
 
-    pdf_bytes = uploaded.getvalue()
+    is_valid, error_msg = validate_uploaded_file(uploaded)
+    if not is_valid:
+        st.error(f"❌ Invalid file: {error_msg}")
+        st.stop()
+
+    try:
+        pdf_bytes = uploaded.getvalue()
+    except Exception as e:
+        st.error(f"❌ Error reading file: {str(e)}")
+        st.stop()
     current_context = (
         project_name.strip(),
         ruleset,
@@ -309,15 +352,41 @@ def main():
         st.session_state.review_saved = False
         st.session_state.report_pdf = None
 
-    with st.spinner("Processing PDF..."):
-        pages = pdf_to_page_images(pdf_bytes, dpi=dpi)
-        page_texts = extract_page_texts(pdf_bytes)
-        title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
+    def _render_pages_with_fallback(source_bytes: bytes, primary_dpi: int):
+        fallback_dpis = [primary_dpi, 350, 300]
+        last_error = None
+        for candidate in fallback_dpis:
+            try:
+                pages_out = pdf_to_page_images(source_bytes, dpi=candidate)
+                return pages_out, candidate
+            except (MemoryError, RuntimeError, ValueError) as exc:
+                last_error = exc
+        raise last_error or RuntimeError("Unable to render PDF pages.")
+
+    try:
+        with st.spinner("Processing PDF..."):
+            pages, rendered_dpi = _render_pages_with_fallback(pdf_bytes, dpi)
+            if rendered_dpi != dpi:
+                st.warning(f"⚠️ Rendering at {rendered_dpi} DPI to avoid crashes.")
+            page_texts = extract_page_texts(pdf_bytes)
+            title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
+    except ValueError as e:
+        st.error(f"❌ PDF Error: {str(e)}")
+        st.info("Please ensure the file is a valid PDF and try again.")
+        st.stop()
+    except RuntimeError as e:
+        st.error(f"❌ Processing Error: {str(e)}")
+        st.info("There was an error processing your PDF. Please try a different file or contact support.")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Unexpected Error: {str(e)}")
+        st.exception(e)
+        st.stop()
 
     st.success(f"✅ Loaded {len(pages)} pages from PDF")
 
     # Display image quality analysis
-    quality_ok = display_image_quality_report(pages, scale_note, dpi)
+    quality_ok = display_image_quality_report(pages, scale_note, rendered_dpi)
 
     if not quality_ok:
         st.warning("⚠️ Some image quality issues detected. Review accuracy may be affected.")
@@ -433,7 +502,7 @@ def main():
                     regions = extract_regions(
                         pdf_bytes,
                         p.page_index,
-                        dpi=dpi,
+                        dpi=rendered_dpi,
                         selected_tags=resolved_tags,
                     )
                     st.markdown("**Detected regions:**")
