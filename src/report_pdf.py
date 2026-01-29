@@ -82,7 +82,15 @@ def _severity_color(severity: str) -> tuple:
     return colors.get(severity, (0, 0, 0))
 
 
-def build_pdf_report(result):
+def _get_effective_severity(issue, annotations) -> str:
+    if not annotations:
+        return issue.severity
+    overrides = annotations.get("severity_overrides", {}) or {}
+    issue_id = getattr(issue, "issue_id", None)
+    return overrides.get(issue_id, issue.severity)
+
+
+def build_pdf_report(result, annotations=None):
     buf = BytesIO()
     c = FooterCanvas(buf, pagesize=letter)
     w, h = letter
@@ -195,7 +203,7 @@ def build_pdf_report(result):
                     y = h - inch
                 
                 # Issue number and severity badge
-                effective_severity = issue.severity
+                effective_severity = _get_effective_severity(issue, annotations)
                 c.setFont("Helvetica-Bold", 10)
                 c.setFillColorRGB(*_severity_color(effective_severity))
                 severity_symbol = {"High": "●", "Medium": "◐", "Low": "○"}
