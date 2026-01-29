@@ -290,6 +290,7 @@ def main():
 
     auto_tagging = st.checkbox("Auto-detect content tags", value=True)
     use_region_detection = st.checkbox("Use region detection / crop views", value=True)
+    require_references = st.sidebar.checkbox("Require code references", value=True)
     dpi = st.sidebar.select_slider(
         "Render DPI",
         options=[150, 200, 300, 450],
@@ -665,6 +666,7 @@ def main():
                     provider=provider,
                     gemini_api_key=gemini_key,
                     gemini_model=gemini_model,
+                    require_references=require_references,
                 )
 
             # Debug: Show raw result structure

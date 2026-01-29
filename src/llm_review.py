@@ -226,6 +226,16 @@ Return STRICT JSON matching this schema:
 IMPORTANT: If a plan looks mostly compliant, keep scanning and add verification issues covering doors, routes, bathrooms, kitchens, thresholds, and hardware. Do NOT stop early.
 """
 
+REFERENCE_REQUIREMENT = """
+REFERENCE REQUIREMENT:
+- Every issue MUST include a code reference (FHA or ANSI). If you cannot identify a specific section, write "Reference needed".
+"""
+
+def _system_instructions(require_references: bool) -> str:
+    if require_references:
+        return SYSTEM_INSTRUCTIONS.strip() + "\n\n" + REFERENCE_REQUIREMENT.strip()
+    return SYSTEM_INSTRUCTIONS
+
 # --- NEW: Agentic Vision addendum (Gemini) ---
 AGENTIC_VISION_ADDENDUM = """
 AGENTIC VISION REQUIREMENTS (IMPORTANT):
@@ -307,7 +317,7 @@ def _coerce_choice(value: str | None, allowed: set[str], fallback: str) -> str:
     return fallback
 
 
-def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_payloads):
+def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_payloads, require_references: bool = False):
     if not isinstance(payload, dict):
         raise ValueError("LLM response was not an object.")
     data = dict(payload)
@@ -366,13 +376,16 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
                 continue
             severity = _coerce_choice(issue.get("severity"), {"High", "Medium", "Low"}, "Low")
             confidence = _coerce_choice(issue.get("confidence"), {"High", "Medium", "Low"}, "Low")
+            reference = issue.get("reference")
+            if require_references and not reference:
+                reference = "Reference needed"
             normalized_issues.append(
                 {
                     "severity": severity,
                     "location_hint": issue.get("location_hint", ""),
                     "finding": issue.get("finding", ""),
                     "recommendation": issue.get("recommendation", ""),
-                    "reference": issue.get("reference"),
+                    "reference": reference,
                     "confidence": confidence,
                     "measurement": issue.get("measurement"),
                 }
@@ -445,6 +458,7 @@ def _openai_run_review(
     scale_note: str,
     page_payloads: list[dict],
     model_name: str = "gpt-4o-mini",
+    require_references: bool = False,
 ) -> ReviewResult:
     client = OpenAI(api_key=openai_api_key)
     content = _build_openai_content(project_name, ruleset, scale_note, page_payloads)
@@ -452,7 +466,7 @@ def _openai_run_review(
     resp = client.chat.completions.create(
         model=model_name,
         messages=[
-            {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+            {"role": "system", "content": _system_instructions(require_references)},
             {"role": "user", "content": content}
         ],
         response_format={"type": "json_object"},
@@ -465,7 +479,14 @@ def _openai_run_review(
         raise ValueError("No response from OpenAI API")
 
     payload = _coerce_json(output_text)
-    payload = _normalize_payload(payload, project_name, ruleset, scale_note, page_payloads)
+    payload = _normalize_payload(
+        payload,
+        project_name,
+        ruleset,
+        scale_note,
+        page_payloads,
+        require_references=require_references,
+    )
     return ReviewResult.model_validate(payload)
 
 
@@ -476,6 +497,7 @@ def _gemini_run_review_per_page(
     scale_note: str,
     page_payloads: list[dict],
     model_name: str = "gemini-3-flash-preview",
+    require_references: bool = False,
 ) -> ReviewResult:
     """
     Gemini Agentic Vision approach:
@@ -512,7 +534,8 @@ REGION TAG: {region_tag}
 Return STRICT JSON matching the schema. Include at least 10 issues when details are visible; otherwise add verification issues.
 """
 
-        system_text = SYSTEM_INSTRUCTIONS.strip() + "\n\n" + AGENTIC_VISION_ADDENDUM.strip()
+        system_text = _system_instructions(require_references).strip()
+        system_text = system_text + "\n\n" + AGENTIC_VISION_ADDENDUM.strip()
 
         resp = client.models.generate_content(
             model=model_name,
@@ -537,7 +560,14 @@ Return STRICT JSON matching the schema. Include at least 10 issues when details 
             raise ValueError(f"Gemini returned empty text for page {page_index}.")
 
         page_payload = _coerce_json(out_text)
-        normalized = _normalize_payload(page_payload, project_name, ruleset, scale_note, [p])
+        normalized = _normalize_payload(
+            page_payload,
+            project_name,
+            ruleset,
+            scale_note,
+            [p],
+            require_references=require_references,
+        )
 
         if normalized.get("pages"):
             merged_pages.extend(normalized["pages"])
@@ -552,7 +582,14 @@ Return STRICT JSON matching the schema. Include at least 10 issues when details 
         "pages": merged_pages,
     }
 
-    merged = _normalize_payload(merged, project_name, ruleset, scale_note, page_payloads)
+    merged = _normalize_payload(
+        merged,
+        project_name,
+        ruleset,
+        scale_note,
+        page_payloads,
+        require_references=require_references,
+    )
     return ReviewResult.model_validate(merged)
 
 
@@ -566,6 +603,7 @@ def run_review(
     provider: str = "openai",
     gemini_api_key: Optional[str] = None,
     gemini_model: str = "gemini-3-flash-preview",
+    require_references: bool = False,
 ) -> ReviewResult:
     """
     Backwards compatible entrypoint used by app.py.
@@ -584,6 +622,7 @@ def run_review(
             scale_note=scale_note,
             page_payloads=page_payloads,
             model_name=gemini_model,
+            require_references=require_references,
         )
 
     return _openai_run_review(
@@ -593,4 +632,5 @@ def run_review(
         scale_note=scale_note,
         page_payloads=page_payloads,
         model_name=model_name,
+        require_references=require_references,
     )
