@@ -528,25 +528,36 @@ def main():
             st.warning("Select at least one page (check Include) before running the review.")
             st.stop()
 
-        api_key = st.secrets.get("OPENAI_API_KEY", "")
-        if not api_key:
-            st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
-            st.stop()
+        provider = st.secrets.get("LLM_PROVIDER", "openai").lower().strip()
+        openai_key = st.secrets.get("OPENAI_API_KEY", "")
+        openai_model = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+        gemini_model = st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview")
 
-        model_name = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
-
-        st.info(f"🤖 Using model: {model_name}")
+        if provider == "gemini":
+            if not gemini_key:
+                st.error("Missing GEMINI_API_KEY in Streamlit secrets.")
+                st.stop()
+            st.info(f"🤖 Using provider: gemini ({gemini_model})")
+        else:
+            if not openai_key:
+                st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+                st.stop()
+            st.info(f"🤖 Using provider: openai ({openai_model})")
         st.info(f"📊 Analyzing {len(selected)} page(s) with ruleset: {ruleset}")
 
         try:
             with st.spinner("🔍 Running accessibility review... This may take 30-60 seconds per page."):
                 result = run_review(
-                    api_key=api_key,
+                    api_key=openai_key,
                     project_name=project_name.strip(),
                     ruleset=ruleset,
                     scale_note=scale_note,
                     page_payloads=selected,
-                    model_name=model_name
+                    model_name=openai_model,
+                    provider=provider,
+                    gemini_api_key=gemini_key,
+                    gemini_model=gemini_model,
                 )
 
             # Debug: Show raw result structure
