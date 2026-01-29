@@ -131,15 +131,18 @@ def load_review_package(payload: dict):
     review = assign_issue_ids(ReviewResult.model_validate(review_payload))
     return review
 
-def display_image_quality_report(page_images, scale_note):
+def display_image_quality_report(page_images, scale_note, dpi):
     """Display image quality report in Streamlit"""
     with st.expander("🔍 Image Quality & Scale Analysis"):
         overall_suitable = True
 
         for page_img in page_images:
-            quality = ImageQualityChecker.check_image_quality(page_img.png_bytes)
+            choice, quality = ImageQualityChecker.choose_best_for_vision(
+                page_img.png_bytes,
+                page_img.enhanced_png_bytes,
+            )
 
-            st.write(f"**Page {page_img.page_index}**")
+            st.write(f"**Page {page_img.page_index}** (using {choice})")
 
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -163,7 +166,7 @@ def display_image_quality_report(page_images, scale_note):
 
         # Scale verification
         st.subheader("Scale Verification")
-        scale_info = ScaleVerifier.suggest_measurement_extraction(scale_note, 200)
+        scale_info = ScaleVerifier.suggest_measurement_extraction(scale_note, dpi)
         st.info(scale_info)
 
         return overall_suitable
@@ -285,6 +288,7 @@ def main():
 
     auto_tagging = st.checkbox("Auto-detect content tags", value=True)
     use_region_detection = st.checkbox("Use region detection / crop views", value=True)
+    dpi = st.sidebar.select_slider("Render DPI", options=[300, 350, 450, 600], value=450)
 
     uploaded = st.file_uploader("Upload PDF", type=["pdf"])
     if not uploaded:
@@ -305,15 +309,33 @@ def main():
         st.session_state.review_saved = False
         st.session_state.report_pdf = None
 
+    def _render_pages_with_fallback(source_bytes: bytes, primary_dpi: int):
+        fallback_dpis = [primary_dpi, 350, 300]
+        last_error = None
+        for candidate in fallback_dpis:
+            try:
+                pages_out = pdf_to_page_images(source_bytes, dpi=candidate)
+                return pages_out, candidate
+            except (MemoryError, RuntimeError, ValueError) as exc:
+                last_error = exc
+        raise last_error or RuntimeError("Unable to render PDF pages.")
+
     with st.spinner("Processing PDF..."):
-        pages = pdf_to_page_images(pdf_bytes)
+        try:
+            pages, rendered_dpi = _render_pages_with_fallback(pdf_bytes, dpi)
+        except Exception as exc:
+            st.error("❌ Failed to render PDF pages. Try a lower DPI or a smaller PDF.")
+            st.exception(exc)
+            st.stop()
+        if rendered_dpi != dpi:
+            st.warning(f"⚠️ Rendering at {rendered_dpi} DPI to avoid crashes.")
         page_texts = extract_page_texts(pdf_bytes)
         title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
 
     st.success(f"✅ Loaded {len(pages)} pages from PDF")
 
     # Display image quality analysis
-    quality_ok = display_image_quality_report(pages, scale_note)
+    quality_ok = display_image_quality_report(pages, scale_note, dpi)
 
     if not quality_ok:
         st.warning("⚠️ Some image quality issues detected. Review accuracy may be affected.")
@@ -429,7 +451,7 @@ def main():
                     regions = extract_regions(
                         pdf_bytes,
                         p.page_index,
-                        dpi=200,
+                        dpi=dpi,
                         selected_tags=resolved_tags,
                     )
                     st.markdown("**Detected regions:**")
@@ -454,13 +476,28 @@ def main():
                             }
                         )
                 else:
+                    dimension_heavy = {
+                        "Floor Plan",
+                        "Interior Elevations",
+                        "Door Schedule",
+                        "RCP / Ceiling",
+                        "Reflected Ceiling Plan",
+                    }
+                    if any(tag in dimension_heavy for tag in resolved_tags):
+                        img_choice = "enhanced"
+                    else:
+                        img_choice, _ = ImageQualityChecker.choose_best_for_vision(
+                            p.png_bytes,
+                            p.enhanced_png_bytes,
+                        )
+                    png_bytes = p.enhanced_png_bytes if img_choice == "enhanced" else p.png_bytes
                     selected.append(
                         {
                             "page_index": p.page_index,
                             "page_label": page_label,
                             "tag": ", ".join(resolved_tags),
                             "scale_note": scale_note,
-                            "png_bytes": p.png_bytes,
+                            "png_bytes": png_bytes,
                             "sheet_id_hint": sheet_number,
                             "sheet_title_hint": sheet_title,
                             "extra_text": extra_text,
@@ -509,25 +546,36 @@ def main():
             st.warning("Select at least one page (check Include) before running the review.")
             st.stop()
 
-        api_key = st.secrets.get("OPENAI_API_KEY", "")
-        if not api_key:
-            st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
-            st.stop()
+        provider = st.secrets.get("LLM_PROVIDER", "openai").lower().strip()
+        openai_key = st.secrets.get("OPENAI_API_KEY", "")
+        openai_model = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+        gemini_model = st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview")
 
-        model_name = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
-
-        st.info(f"🤖 Using model: {model_name}")
+        if provider == "gemini":
+            if not gemini_key:
+                st.error("Missing GEMINI_API_KEY in Streamlit secrets.")
+                st.stop()
+            st.info(f"🤖 Using provider: gemini ({gemini_model})")
+        else:
+            if not openai_key:
+                st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+                st.stop()
+            st.info(f"🤖 Using provider: openai ({openai_model})")
         st.info(f"📊 Analyzing {len(selected)} page(s) with ruleset: {ruleset}")
 
         try:
             with st.spinner("🔍 Running accessibility review... This may take 30-60 seconds per page."):
                 result = run_review(
-                    api_key=api_key,
+                    api_key=openai_key,
                     project_name=project_name.strip(),
                     ruleset=ruleset,
                     scale_note=scale_note,
                     page_payloads=selected,
-                    model_name=model_name
+                    model_name=openai_model,
+                    provider=provider,
+                    gemini_api_key=gemini_key,
+                    gemini_model=gemini_model,
                 )
 
             # Debug: Show raw result structure
