@@ -290,7 +290,6 @@ def main():
 
     auto_tagging = st.checkbox("Auto-detect content tags", value=True)
     use_region_detection = st.checkbox("Use region detection / crop views", value=True)
-    require_references = st.sidebar.checkbox("Require code references", value=True)
     dpi = st.sidebar.select_slider(
         "Render DPI",
         options=[150, 200, 300, 450],
@@ -636,22 +635,71 @@ def main():
             st.warning("Select at least one page (check Include) before running the review.")
             st.stop()
 
-        provider = st.secrets.get("LLM_PROVIDER", "openai").lower().strip()
+        provider = st.secrets.get("LLM_PROVIDER", "gemini").lower().strip()
         openai_key = st.secrets.get("OPENAI_API_KEY", "")
-        openai_model = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+        openai_model = st.secrets.get("OPENAI_MODEL", "gpt-4o")
         gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-        gemini_model = st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview")
+        gemini_model = st.secrets.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
+
+        st.divider()
+        st.subheader("🔍 Model Configuration")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric("Provider", provider.upper())
+
+        with col2:
+            if provider == "gemini":
+                st.metric("Model", gemini_model)
+                if gemini_key:
+                    st.caption(f"✓ API Key: {gemini_key[:12]}***")
+                else:
+                    st.caption("❌ No API key configured")
+            else:
+                st.metric("Model", openai_model)
+                if openai_key:
+                    st.caption(f"✓ API Key: {openai_key[:12]}***")
+                else:
+                    st.caption("❌ No API key configured")
+
+        with col3:
+            if provider == "gemini":
+                if "2.0" in gemini_model:
+                    quality = "🟢 Excellent"
+                    st.metric("Expected Quality", quality)
+                    st.caption("High confidence, good at reading dimensions")
+                elif "1.5-pro" in gemini_model:
+                    quality = "🟢 Very Good"
+                    st.metric("Expected Quality", quality)
+                else:
+                    quality = "🟡 Good"
+                    st.metric("Expected Quality", quality)
+            else:
+                if openai_model == "gpt-4o":
+                    quality = "🟢 Excellent"
+                    st.metric("Expected Quality", quality)
+                    st.caption("Best OpenAI model for vision tasks")
+                elif "gpt-4" in openai_model:
+                    quality = "🟢 Good"
+                    st.metric("Expected Quality", quality)
+                else:
+                    quality = "🟡 Budget"
+                    st.metric("Expected Quality", quality)
+                    st.caption("⚠️ Lower quality - consider gpt-4o")
 
         if provider == "gemini":
             if not gemini_key:
-                st.error("Missing GEMINI_API_KEY in Streamlit secrets.")
+                st.error("❌ GEMINI_API_KEY is missing from Streamlit secrets!")
+                st.info("Add GEMINI_API_KEY to your secrets to use Gemini models")
                 st.stop()
-            st.info(f"🤖 Using provider: gemini ({gemini_model})")
         else:
             if not openai_key:
-                st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+                st.error("❌ OPENAI_API_KEY is missing from Streamlit secrets!")
+                st.info("Add OPENAI_API_KEY to your secrets to use OpenAI models")
                 st.stop()
-            st.info(f"🤖 Using provider: openai ({openai_model})")
+
+        st.divider()
         st.info(f"📊 Analyzing {len(selected)} page(s) with ruleset: {ruleset}")
 
         try:
@@ -666,7 +714,6 @@ def main():
                     provider=provider,
                     gemini_api_key=gemini_key,
                     gemini_model=gemini_model,
-                    require_references=require_references,
                 )
 
             # Debug: Show raw result structure
