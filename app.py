@@ -1,4 +1,6 @@
 import subprocess
+import gc
+import fitz
 import streamlit as st
 import json
 from src.auth import require_login
@@ -288,7 +290,14 @@ def main():
 
     auto_tagging = st.checkbox("Auto-detect content tags", value=True)
     use_region_detection = st.checkbox("Use region detection / crop views", value=True)
-    dpi = st.sidebar.select_slider("Render DPI", options=[300, 350, 450, 600], value=450)
+    dpi = st.sidebar.select_slider(
+        "Render DPI",
+        options=[150, 200, 300, 450],
+        value=300,
+        help="Higher DPI = better quality but more memory. Use 300 for most cases.",
+    )
+    if dpi >= 450:
+        st.sidebar.warning("⚠️ High DPI uses significant memory. May cause crashes with large PDFs.")
 
     # File validation constants
     MAX_FILE_SIZE_MB = 100
@@ -338,6 +347,19 @@ def main():
     except Exception as e:
         st.error(f"❌ Error reading file: {str(e)}")
         st.stop()
+
+    temp_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page_count = len(temp_doc)
+    temp_doc.close()
+
+    estimated_mb = page_count * (dpi / 300) * (dpi / 300) * 55
+    if estimated_mb > 800:
+        st.error(f"⚠️ This PDF ({page_count} pages @ {dpi} DPI) will use ~{estimated_mb:.0f}MB")
+        st.error("This may crash the app. Please:")
+        st.markdown("- Lower DPI to 200-300")
+        st.markdown("- Or select fewer pages")
+        st.markdown("- Or upload a smaller PDF")
+        st.stop()
     current_context = (
         project_name.strip(),
         ruleset,
@@ -368,15 +390,25 @@ def main():
             pages, rendered_dpi = _render_pages_with_fallback(pdf_bytes, dpi)
             if rendered_dpi != dpi:
                 st.warning(f"⚠️ Rendering at {rendered_dpi} DPI to avoid crashes.")
+            if "processed_pages" in st.session_state:
+                del st.session_state.processed_pages
             page_texts = extract_page_texts(pdf_bytes)
             title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
+            gc.collect()
     except ValueError as e:
         st.error(f"❌ PDF Error: {str(e)}")
         st.info("Please ensure the file is a valid PDF and try again.")
         st.stop()
+    except MemoryError:
+        st.error("❌ Out of Memory Error")
+        st.error("This PDF is too large for the available memory. Please:")
+        st.markdown("- Lower the DPI to 200 or 300")
+        st.markdown("- Select fewer pages to process")
+        st.markdown("- Use a smaller PDF file")
+        st.stop()
     except RuntimeError as e:
         st.error(f"❌ Processing Error: {str(e)}")
-        st.info("There was an error processing your PDF. Please try a different file or contact support.")
+        st.info("Try lowering DPI or using a smaller PDF.")
         st.stop()
     except Exception as e:
         st.error(f"❌ Unexpected Error: {str(e)}")
@@ -554,6 +586,12 @@ def main():
                             "extra_text": extra_text,
                         }
                     )
+                    if img_choice == "enhanced":
+                        p.png_bytes = None
+                    else:
+                        p.enhanced_png_bytes = None
+
+            gc.collect()
 
     selected_page_indices = sorted({p["page_index"] for p in selected})
     st.write(f"**Selected pages:** {selected_page_indices}")
