@@ -345,6 +345,30 @@ def _parse_fraction(s: str) -> float:
         return float(num) / float(den)
     return float(s)
 
+    @staticmethod
+    def check_image_quality(png_bytes: bytes) -> Dict:
+        return ImageQualityChecker._score_png(png_bytes)
+
+    @staticmethod
+    def choose_best_for_vision(base_png: bytes, enhanced_png: bytes) -> Tuple[str, Dict]:
+        """
+        Returns ("base" or "enhanced", metrics_for_winner)
+        Prefer higher sharpness, then higher quality_score.
+        """
+        a = ImageQualityChecker._score_png(base_png)
+        b = ImageQualityChecker._score_png(enhanced_png)
+
+        if (b["sharpness"], b["quality_score"]) > (a["sharpness"], a["quality_score"]):
+            return "enhanced", b
+        return "base", a
+
+def _parse_fraction(s: str) -> float:
+    s = s.strip()
+    if "/" in s:
+        num, den = s.split("/", 1)
+        return float(num) / float(den)
+    return float(s)
+
 class ScaleVerifier:
     """Verify and parse architectural scale"""
     
