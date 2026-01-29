@@ -472,13 +472,16 @@ def _normalize_payload(payload: dict, project_name, ruleset, scale_note, page_pa
                 continue
             severity = _coerce_choice(issue.get("severity"), {"High", "Medium", "Low"}, "Low")
             confidence = _coerce_choice(issue.get("confidence"), {"High", "Medium", "Low"}, "Low")
+            reference = issue.get("reference")
+            if require_references and not reference:
+                reference = "Reference needed"
             normalized_issues.append(
                 {
                     "severity": severity,
                     "location_hint": issue.get("location_hint", ""),
                     "finding": issue.get("finding", ""),
                     "recommendation": issue.get("recommendation", ""),
-                    "reference": issue.get("reference"),
+                    "reference": reference,
                     "confidence": confidence,
                     "measurement": issue.get("measurement"),
                 }
@@ -557,7 +560,7 @@ def _openai_run_review(
     resp = client.chat.completions.create(
         model=model_name,
         messages=[
-            {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+            {"role": "system", "content": _system_instructions(require_references)},
             {"role": "user", "content": content}
         ],
         response_format={"type": "json_object"},
