@@ -1,4 +1,6 @@
 import subprocess
+import gc
+import fitz
 import streamlit as st
 import json
 from src.auth import require_login
@@ -131,15 +133,18 @@ def load_review_package(payload: dict):
     review = assign_issue_ids(ReviewResult.model_validate(review_payload))
     return review
 
-def display_image_quality_report(page_images, scale_note):
+def display_image_quality_report(page_images, scale_note, dpi):
     """Display image quality report in Streamlit"""
     with st.expander("🔍 Image Quality & Scale Analysis"):
         overall_suitable = True
 
         for page_img in page_images:
-            quality = ImageQualityChecker.check_image_quality(page_img.png_bytes)
+            choice, quality = ImageQualityChecker.choose_best_for_vision(
+                page_img.png_bytes,
+                page_img.enhanced_png_bytes,
+            )
 
-            st.write(f"**Page {page_img.page_index}**")
+            st.write(f"**Page {page_img.page_index}** (using {choice})")
 
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -163,7 +168,7 @@ def display_image_quality_report(page_images, scale_note):
 
         # Scale verification
         st.subheader("Scale Verification")
-        scale_info = ScaleVerifier.suggest_measurement_extraction(scale_note, 200)
+        scale_info = ScaleVerifier.suggest_measurement_extraction(scale_note, dpi)
         st.info(scale_info)
 
         return overall_suitable
@@ -285,12 +290,77 @@ def main():
 
     auto_tagging = st.checkbox("Auto-detect content tags", value=True)
     use_region_detection = st.checkbox("Use region detection / crop views", value=True)
+    require_references = st.sidebar.checkbox("Require code references", value=True)
+    dpi = st.sidebar.select_slider(
+        "Render DPI",
+        options=[150, 200, 300, 450],
+        value=300,
+        help="Higher DPI = better quality but more memory. Use 300 for most cases.",
+    )
+    if dpi >= 450:
+        st.sidebar.warning("⚠️ High DPI uses significant memory. May cause crashes with large PDFs.")
+
+    # File validation constants
+    MAX_FILE_SIZE_MB = 100
+    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+    def validate_uploaded_file(uploaded_file):
+        """
+        Validate uploaded PDF file before processing.
+        Returns (is_valid, error_message)
+        """
+        file_size = uploaded_file.size
+        if file_size > MAX_FILE_SIZE_BYTES:
+            return False, (
+                f"File too large ({file_size/(1024*1024):.1f}MB). "
+                f"Maximum size: {MAX_FILE_SIZE_MB}MB"
+            )
+
+        if file_size == 0:
+            return False, "File is empty"
+
+        if not uploaded_file.name.lower().endswith(".pdf"):
+            return False, "File must be a PDF"
+
+        try:
+            uploaded_file.seek(0)
+            header = uploaded_file.read(8)
+            uploaded_file.seek(0)
+
+            if not header.startswith(b"%PDF"):
+                return False, "File does not appear to be a valid PDF (missing PDF header)"
+        except Exception as e:
+            return False, f"Error reading file: {str(e)}"
+
+        return True, None
 
     uploaded = st.file_uploader("Upload PDF", type=["pdf"])
     if not uploaded:
         st.stop()
 
-    pdf_bytes = uploaded.getvalue()
+    is_valid, error_msg = validate_uploaded_file(uploaded)
+    if not is_valid:
+        st.error(f"❌ Invalid file: {error_msg}")
+        st.stop()
+
+    try:
+        pdf_bytes = uploaded.getvalue()
+    except Exception as e:
+        st.error(f"❌ Error reading file: {str(e)}")
+        st.stop()
+
+    temp_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page_count = len(temp_doc)
+    temp_doc.close()
+
+    estimated_mb = page_count * (dpi / 300) * (dpi / 300) * 55
+    if estimated_mb > 800:
+        st.error(f"⚠️ This PDF ({page_count} pages @ {dpi} DPI) will use ~{estimated_mb:.0f}MB")
+        st.error("This may crash the app. Please:")
+        st.markdown("- Lower DPI to 200-300")
+        st.markdown("- Or select fewer pages")
+        st.markdown("- Or upload a smaller PDF")
+        st.stop()
     current_context = (
         project_name.strip(),
         ruleset,
@@ -305,15 +375,51 @@ def main():
         st.session_state.review_saved = False
         st.session_state.report_pdf = None
 
-    with st.spinner("Processing PDF..."):
-        pages = pdf_to_page_images(pdf_bytes)
-        page_texts = extract_page_texts(pdf_bytes)
-        title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
+    def _render_pages_with_fallback(source_bytes: bytes, primary_dpi: int):
+        fallback_dpis = [primary_dpi, 350, 300]
+        last_error = None
+        for candidate in fallback_dpis:
+            try:
+                pages_out = pdf_to_page_images(source_bytes, dpi=candidate)
+                return pages_out, candidate
+            except (MemoryError, RuntimeError, ValueError) as exc:
+                last_error = exc
+        raise last_error or RuntimeError("Unable to render PDF pages.")
+
+    try:
+        with st.spinner("Processing PDF..."):
+            pages, rendered_dpi = _render_pages_with_fallback(pdf_bytes, dpi)
+            if rendered_dpi != dpi:
+                st.warning(f"⚠️ Rendering at {rendered_dpi} DPI to avoid crashes.")
+            if "processed_pages" in st.session_state:
+                del st.session_state.processed_pages
+            page_texts = extract_page_texts(pdf_bytes)
+            title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
+            gc.collect()
+    except ValueError as e:
+        st.error(f"❌ PDF Error: {str(e)}")
+        st.info("Please ensure the file is a valid PDF and try again.")
+        st.stop()
+    except MemoryError:
+        st.error("❌ Out of Memory Error")
+        st.error("This PDF is too large for the available memory. Please:")
+        st.markdown("- Lower the DPI to 200 or 300")
+        st.markdown("- Select fewer pages to process")
+        st.markdown("- Use a smaller PDF file")
+        st.stop()
+    except RuntimeError as e:
+        st.error(f"❌ Processing Error: {str(e)}")
+        st.info("Try lowering DPI or using a smaller PDF.")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Unexpected Error: {str(e)}")
+        st.exception(e)
+        st.stop()
 
     st.success(f"✅ Loaded {len(pages)} pages from PDF")
 
     # Display image quality analysis
-    quality_ok = display_image_quality_report(pages, scale_note)
+    quality_ok = display_image_quality_report(pages, scale_note, rendered_dpi)
 
     if not quality_ok:
         st.warning("⚠️ Some image quality issues detected. Review accuracy may be affected.")
@@ -429,7 +535,7 @@ def main():
                     regions = extract_regions(
                         pdf_bytes,
                         p.page_index,
-                        dpi=200,
+                        dpi=rendered_dpi,
                         selected_tags=resolved_tags,
                     )
                     st.markdown("**Detected regions:**")
@@ -454,18 +560,39 @@ def main():
                             }
                         )
                 else:
+                    dimension_heavy = {
+                        "Floor Plan",
+                        "Interior Elevations",
+                        "Door Schedule",
+                        "RCP / Ceiling",
+                        "Reflected Ceiling Plan",
+                    }
+                    if any(tag in dimension_heavy for tag in resolved_tags):
+                        img_choice = "enhanced"
+                    else:
+                        img_choice, _ = ImageQualityChecker.choose_best_for_vision(
+                            p.png_bytes,
+                            p.enhanced_png_bytes,
+                        )
+                    png_bytes = p.enhanced_png_bytes if img_choice == "enhanced" else p.png_bytes
                     selected.append(
                         {
                             "page_index": p.page_index,
                             "page_label": page_label,
                             "tag": ", ".join(resolved_tags),
                             "scale_note": scale_note,
-                            "png_bytes": p.png_bytes,
+                            "png_bytes": png_bytes,
                             "sheet_id_hint": sheet_number,
                             "sheet_title_hint": sheet_title,
                             "extra_text": extra_text,
                         }
                     )
+                    if img_choice == "enhanced":
+                        p.png_bytes = None
+                    else:
+                        p.enhanced_png_bytes = None
+
+            gc.collect()
 
     selected_page_indices = sorted({p["page_index"] for p in selected})
     st.write(f"**Selected pages:** {selected_page_indices}")
@@ -509,25 +636,37 @@ def main():
             st.warning("Select at least one page (check Include) before running the review.")
             st.stop()
 
-        api_key = st.secrets.get("OPENAI_API_KEY", "")
-        if not api_key:
-            st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
-            st.stop()
+        provider = st.secrets.get("LLM_PROVIDER", "openai").lower().strip()
+        openai_key = st.secrets.get("OPENAI_API_KEY", "")
+        openai_model = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
+        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+        gemini_model = st.secrets.get("GEMINI_MODEL", "gemini-3-flash-preview")
 
-        model_name = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
-
-        st.info(f"🤖 Using model: {model_name}")
+        if provider == "gemini":
+            if not gemini_key:
+                st.error("Missing GEMINI_API_KEY in Streamlit secrets.")
+                st.stop()
+            st.info(f"🤖 Using provider: gemini ({gemini_model})")
+        else:
+            if not openai_key:
+                st.error("Missing OPENAI_API_KEY in Streamlit secrets.")
+                st.stop()
+            st.info(f"🤖 Using provider: openai ({openai_model})")
         st.info(f"📊 Analyzing {len(selected)} page(s) with ruleset: {ruleset}")
 
         try:
             with st.spinner("🔍 Running accessibility review... This may take 30-60 seconds per page."):
                 result = run_review(
-                    api_key=api_key,
+                    api_key=openai_key,
                     project_name=project_name.strip(),
                     ruleset=ruleset,
                     scale_note=scale_note,
                     page_payloads=selected,
-                    model_name=model_name
+                    model_name=openai_model,
+                    provider=provider,
+                    gemini_api_key=gemini_key,
+                    gemini_model=gemini_model,
+                    require_references=require_references,
                 )
 
             # Debug: Show raw result structure
