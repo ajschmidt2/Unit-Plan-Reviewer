@@ -309,8 +309,26 @@ def main():
         st.session_state.review_saved = False
         st.session_state.report_pdf = None
 
+    def _render_pages_with_fallback(source_bytes: bytes, primary_dpi: int):
+        fallback_dpis = [primary_dpi, 350, 300]
+        last_error = None
+        for candidate in fallback_dpis:
+            try:
+                pages_out = pdf_to_page_images(source_bytes, dpi=candidate)
+                return pages_out, candidate
+            except (MemoryError, RuntimeError, ValueError) as exc:
+                last_error = exc
+        raise last_error or RuntimeError("Unable to render PDF pages.")
+
     with st.spinner("Processing PDF..."):
-        pages = pdf_to_page_images(pdf_bytes, dpi=dpi)
+        try:
+            pages, rendered_dpi = _render_pages_with_fallback(pdf_bytes, dpi)
+        except Exception as exc:
+            st.error("❌ Failed to render PDF pages. Try a lower DPI or a smaller PDF.")
+            st.exception(exc)
+            st.stop()
+        if rendered_dpi != dpi:
+            st.warning(f"⚠️ Rendering at {rendered_dpi} DPI to avoid crashes.")
         page_texts = extract_page_texts(pdf_bytes)
         title_blocks = extract_title_block_texts(pdf_bytes, max_pages=len(pages))
 
